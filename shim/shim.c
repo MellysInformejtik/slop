@@ -11,15 +11,10 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#include "fdt.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
-#define PSHOLD			0x0c264000UL
 
-#define GICD_BASE		0x17a00000UL
-#define GICR_BASE		0x17a60000UL
-#define GICR_SIZE		0x100000UL
-#define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
 #define GICR_WAKER		0x14
 #define GICR_SGI		0x10000
@@ -30,8 +25,6 @@
 #define GICR_ISPENDR0		(GICR_SGI + 0x200)
 #define GICR_ISACTIVER0		(GICR_SGI + 0x300)
 #define GICR_ICFGR1		(GICR_SGI + 0xc04)
-#define VTIMER_INTID		19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
-#define PTIMER_INTID		18	/* DT: <GIC_PPI 2 ...> */
 #define SGI_INTID		1
 
 #define PSCI_VERSION		0x84000000UL
@@ -109,7 +102,8 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
-	wr32(PSHOLD, 0);
+	if (PSHOLD)
+		wr32(PSHOLD, 0);
 	for (;;)
 		__asm__ volatile("wfe");
 }
@@ -370,6 +364,28 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+#if defined(BOARD_NEGRONI)
+/*
+ * First boot on a new board: what ABL hands over (RAM ranges), the CPU,
+ * PSCI, SMP and GIC answers the sweet port needed, before any xnu payload.
+ */
+static void probe_board(uint64_t dtb)
+{
+	uint64_t base, size;
+
+	stage = "memory";
+	for (int i = 0; i < 6 && fdt_memory(dtb, i, &base, &size); i++)
+		con_hex2("MEM", "pfn=", base >> 12, "MiB=", size >> 20);
+	con_hex2("MIDR", "cpu0=", rsr("midr_el1"), "mpidr=", rsr("mpidr_el1"));
+	con_hex2("CURREL", "el=", rsr("currentel") >> 2, "pfr0=", rsr("id_aa64pfr0_el1"));
+	stage = "psci";
+	con_hex2("PSCI", "ver=", smc(PSCI_VERSION, 0, 0, 0), "smccc=", smc(SMCCC_VERSION, 0, 0, 0));
+	test_smp();
+	test_gic();
+	con_skip();
+}
+#endif
+
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
@@ -377,12 +393,15 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", BOARD_NAME " milestone 4: xnu loader");
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
 
+#if defined(BOARD_NEGRONI)
+	probe_board(dtb);
+#endif
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
 	test_ufs();

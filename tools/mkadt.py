@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
-Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+Only what the early boot path actually reads (see NOTES.md); every sweet MMIO
+address comes from the sweet live FDT.
+
+Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|negroni]
+                 [--dram BASE:SIZE] [--ufs]
+
+--board negroni: OnePlus 10 Pro 5G (SM8450), addresses from the mainline DT
+(docs/negroni.md). No /sweet-ufs node unless --ufs: the kernel then never
+touches the UFS (its persistent log writes the tail of userdata).
+--dram overrides the kernel-managed RAM range (hex), e.g. from the negroni probe.
 """
 import hashlib, os, struct, sys
 
@@ -32,6 +40,25 @@ VTIMER_INTID = 19
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
+
+# OnePlus 10 Pro 5G "negroni" (SM8450), from sm8450.dtsi / sm8450-oneplus-negroni.dts.
+NEGRONI = dict(
+    gicd=(0x17100000, 0x10000),
+    gicr=(0x17180000, 0x200000),
+    gicr_stride=0x40000,         # GICv4: RD + SGI + VLPI + reserved frames per PE
+    vtimer=27,                   # <GIC_PPI 11 ...>, the usual numbering
+    # splash_region; ABL keeps the display on only for a region of that name
+    fb=(0xb8000000, 0x2b00000, 1080, 2412),
+    # The low DDR bank is full of carve-outs; the largest free run in the
+    # mainline reserved-memory map is 0xea000000-0x100000000. Enough for the
+    # kernel and a small ramdisk. The upper bank's address comes from ABL's
+    # /memory (shim probe) and is passed with --dram.
+    dram=(0xea000000, 0x16000000),
+    # cpu0-3 Cortex-A510, cpu4-6 Cortex-A710, cpu7 Cortex-X2 (Kryo 780)
+    cpu_clock=[1785600000] * 4 + [2496000000] * 3 + [2995200000],
+    cpu_compatible='qcom,kryo780',
+    compatible=('oplus,negroni', 'qcom,sm8450'),
+)
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
@@ -68,10 +95,26 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False):
-    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
+def build(seed=None, qemu=False, highmem=False, board='sweet', dram=None, ufs=None):
+    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py).
+    board='negroni': the OnePlus 10 Pro tree (highmem does not apply; use dram)."""
+    neg = board == 'negroni'
+    if board not in ('sweet', 'negroni'):
+        raise SystemExit(f'unknown board {board}')
+    if neg and highmem:
+        raise SystemExit('--highmem is sweet-only; pass the negroni range with --dram')
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
+    if neg:
+        phys_base, mem_size = NEGRONI['dram']
+    if dram:
+        phys_base, mem_size = dram
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
+    gicd_size, gicr_size = GICD_SIZE, GICR_SIZE
+    if neg and not qemu:
+        (gicd, gicd_size), (gicr, gicr_size) = NEGRONI['gicd'], NEGRONI['gicr']
+    fb, fb_size, fb_w, fb_h = NEGRONI['fb'] if neg else (FB, FB_SIZE, FB_W, FB_H)
+    if ufs is None:
+        ufs = not neg
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
     ph = lambda: ('AAPL,phandle', u32(next(phandle)))
@@ -123,12 +166,16 @@ def build(seed=None, qemu=False, highmem=False):
     # 6-7 Cortex-A76), one homogeneous cluster. The kernel defaults to one
     # and uses cpus=N to select an initial prefix (N <= 8).
     # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
+    # negroni has the same MPIDR scheme (Aff1 = core 0-7, Aff0 = 0).
+    sweet_clock = lambda core: 2304000000 if core >= 6 else 1804800000
+    cpu_clock = (lambda core: NEGRONI['cpu_clock'][core]) if neg else sweet_clock
+    cpu_compatible = NEGRONI['cpu_compatible'] if neg else 'qcom,kryo470'
     cpu_nodes = []
     for core in range(1 if qemu else 8):
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo470') + cstr('ARM,v8')),
+            ('compatible', cstr(cpu_compatible) + cstr('ARM,v8')),
             ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
@@ -139,7 +186,7 @@ def build(seed=None, qemu=False, highmem=False):
             ('l3-cache-id', u32(0)),     # shared L3
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2304000000 if core >= 6 else 1804800000)),
+            ('clock-frequency', u32(cpu_clock(core))),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -148,13 +195,18 @@ def build(seed=None, qemu=False, highmem=False):
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 
-    gic = node('gic', [
+    vtimer = QEMU_VTIMER_INTID if qemu else NEGRONI['vtimer'] if neg else VTIMER_INTID
+    gic_props = [
         ph(),
         ('compatible', cstr('arm,gic-v3')),
         ('interrupt-controller', b''),
-        ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else VTIMER_INTID)),
-        ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
-    ])
+        ('virtual-timer-intid', u32(vtimer)),
+        ('reg', u64(gicd - SOC_BASE, gicd_size, gicr - SOC_BASE, gicr_size)),
+    ]
+    if neg and not qemu:
+        # pe_fiq.c (patch 0082); absent = GICR_PE_SIZE 0x20000
+        gic_props.append(('redistributor-stride', u32(NEGRONI['gicr_stride'])))
+    gic = node('gic', gic_props)
     arm_io = node('arm-io', [
         ph(),
         ('device_type', cstr('sweet-io')),
@@ -181,14 +233,14 @@ def build(seed=None, qemu=False, highmem=False):
 
     fbcon = node('sweet-fbcon', [
         ph(),
-        ('reg', u64(FB, FB_SIZE)),
-        ('width', u32(FB_W)),
-        ('height', u32(FB_H)),
-        ('stride', u32(FB_STRIDE)),
+        ('reg', u64(fb, fb_size)),
+        ('width', u32(fb_w)),
+        ('height', u32(fb_h)),
+        ('stride', u32(fb_w * 4)),
     ])
 
     # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
-    ufs = node('sweet-ufs', [
+    ufs_node = node('sweet-ufs', [
         ph(),
         ('compatible', cstr('qcom,ufshc')),
         ('reg', u64(UFS, UFS_SIZE)),
@@ -214,21 +266,40 @@ def build(seed=None, qemu=False, highmem=False):
 
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
-    # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
+    # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching
+    # (IONameMatch, also on negroni until the kernel knows another name).
+    board_compat = (cstr(NEGRONI['compatible'][0]) + cstr('xiaomi,sweet') + cstr(NEGRONI['compatible'][1])
+                    if neg else cstr('xiaomi,sweet') + cstr('qcom,sm7150'))
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + board_compat + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([ufs_node] if ufs and not qemu else []))
+
+
+def _arg(name):
+    if name not in sys.argv:
+        return None
+    i = sys.argv.index(name)
+    if i + 1 >= len(sys.argv):
+        raise SystemExit(f'{name} needs a value')
+    return sys.argv[i + 1]
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv)
+    dram = _arg('--dram')
+    if dram:
+        base, size = (int(v, 16) for v in dram.split(':'))
+        if base & 0x1ffffff or size & 0x3fff:
+            raise SystemExit('--dram: base must be 32 MiB aligned, size 16 KiB aligned')
+        dram = (base, size)
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
+                 board=_arg('--board') or 'sweet', dram=dram, ufs=True if '--ufs' in sys.argv else None)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

@@ -2,6 +2,15 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-20: second board, OnePlus 10 Pro 5G "negroni" (SM8450) <<<
+
+Port started; plan, hardware map and unknowns in **`docs/negroni.md`**. Nothing has booted on negroni yet.
+- Done (host side, untested on hardware): `shim/board.h` + `BOARD=negroni shim/build.sh` (negroni constants; with no payload it runs a probe: ABL /memory, MIDR/EL, PSCI, SMP, GIC vtimer/SGI, read-only UFS); `tools/mkadt.py --board negroni [--dram B:S] [--ufs]` (sweet ADTs verified byte-identical); kernel patch **0082** (GICR stride from ADT `redistributor-stride`, default 0x20000; NOT CI-built yet).
+- **The shim C was not compiled**: the machine used (WSL, user paw) had no gcc/cross gcc/dtc/mkbootimg/gh. Build it before the first boot.
+- Safety: the negroni ADT has no /sweet-ufs node by default (the persistent log would overwrite the tail of Android's userdata). The negroni kernel boot needs `sweetlog=0 sweetkeys=0 sweettouch=0 sweetusb=0` (these drivers default to on with sweet MMIO).
+- Next: the user extracts the stock vendor_boot DTB into `dtb/negroni/dtb`, builds the shim, `fastboot boot` probe, photographs the result -> fill in the unknowns in docs/negroni.md.
+- Mainline source used: XEC linux `476a4a8` (sparse clone in a session scratchpad; the user's full clone is in `linux/`, untracked).
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**
