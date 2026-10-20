@@ -65,6 +65,18 @@ jobs:
         run: |
           git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/UniXNU/UniXNU.git "$RUNNER_TEMP/UniXNU"
           git -C "$RUNNER_TEMP/UniXNU" log -1 --format='UniXNU %H %cd'
+          # Fresh-tree bootstrap pass: build-xnu-4k-baseline.sh tests for archives (corecrypto, drivers) that only
+          # the later archive step builds, so the pass exits before compiling and leaves no compile records.
+          # For that pass only, turn every enabled XNU_* feature off: plain XNU compiles and leaves the records.
+          python3 - "$RUNNER_TEMP/UniXNU/scripts/unixnu/kernel.py" <<'PY'
+          import sys
+          p = sys.argv[1]; s = open(p).read()
+          old = "subprocess_env = {**env, 'XNU_BOOT_PROGRESS': '0'}"
+          new = ("subprocess_env = {**{k: ('0' if k.startswith('XNU_') and v == '1' else v) for k, v in env.items()}, "
+                 "'XNU_BOOT_PROGRESS': '0', 'XNU_CRYPTO_BOOTSTRAP': 'source'}")
+          assert old in s, 'unixnu kernel.py changed: bootstrap env line not found'
+          open(p, 'w').write(s.replace(old, new))
+          PY
 
       - name: Configure and fetch
         working-directory: ${{ runner.temp }}/UniXNU
