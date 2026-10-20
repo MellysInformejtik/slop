@@ -75,6 +75,51 @@ static int magic_ok(const char *m)
 }
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
+typedef void (*uefi_entry_t)(uint64_t dtb);
+
+/*
+ * Mu-Silicium UEFI firmware volume in the ramdisk (EFI_FIRMWARE_VOLUME_HEADER
+ * signature "_FVH" at 0x28): copy it to its link address and enter it like
+ * Mu's BootShim does (x0 = DTB, MMU off). negroni's ABL never ran Mu's own
+ * boot image, so the shim, which ABL does run, takes BootShim's place.
+ */
+#define UEFI_FD_BASE	0xA7100000UL
+#define UEFI_FD_MAX	0x00300000UL
+
+static void uefi_wait_s(unsigned s)
+{
+	uint64_t f, t, end;
+	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+	__asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(t));
+	end = t + f * s;
+	do
+		__asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(t));
+	while (t < end);
+}
+
+static int fv_ok(uintptr_t rd)
+{
+	const char *m = (const char *)(rd + 0x28);
+	return m[0] == '_' && m[1] == 'F' && m[2] == 'V' && m[3] == 'H';
+}
+
+static const char *uefi_boot(uintptr_t dtb, uint64_t rd_start, uint64_t rd_end)
+{
+	/* FvLength at 0x20: the ramdisk is padded (ABL dislikes small ramdisks) */
+	uint64_t size = (*(volatile uint64_t *)(rd_start + 0x20) + 15) & ~15UL;
+
+	if (size > UEFI_FD_MAX)
+		return "UEFI FD too big";
+	if (rd_end > UEFI_FD_BASE && rd_start < UEFI_FD_BASE + UEFI_FD_MAX)
+		return "ramdisk overlaps UEFI FD";
+	con_hex2("UEFI", "fd=", UEFI_FD_BASE, "size=", size);
+	copy64(UEFI_FD_BASE, rd_start, size);
+	con_str("UEFI", "jumping in 10s");
+	uefi_wait_s(10);
+	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
+	((uefi_entry_t)UEFI_FD_BASE)(dtb);
+	return "UEFI returned";
+}
 
 const char *loader_boot(uintptr_t dtb)
 {
@@ -84,6 +129,9 @@ const char *loader_boot(uintptr_t dtb)
 	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+
+	if (fv_ok(rd_start))
+		return uefi_boot(dtb, rd_start, rd_end);
 
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))

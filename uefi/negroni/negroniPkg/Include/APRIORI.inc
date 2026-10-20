@@ -37,7 +37,8 @@ APRIORI DXE {
 
   INF MdeModulePkg/Universal/ResetSystemRuntimeDxe/ResetSystemRuntimeDxe.inf
 
-  INF Binaries/negroni/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
+  # negroni: SPMI channel abort in PmicDxe
+  # INF Binaries/negroni/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
 
   INF Binaries/negroni/MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF Binaries/negroni/MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
@@ -76,7 +77,8 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
   INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
 
-  INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
+  # negroni: SPMI channel abort in PmicDxe
+  # INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/XhciDxe/XhciDxe.inf
@@ -89,7 +91,8 @@ APRIORI DXE {
   INF Binaries/negroni/QcomPkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbInitDxe/UsbInitDxe.inf
-  INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
+  # negroni: SPMI channel abort in PmicDxe
+  # INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/TsensDxe/TsensDxe.inf
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
   INF Binaries/negroni/QcomPkg/Drivers/CPRDxe/CPRDxe.inf

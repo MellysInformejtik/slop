@@ -33,7 +33,8 @@
   INF Binaries/negroni/QcomPkg/Drivers/HWIODxe/HWIODxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/I2CDxe/I2CDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/TLMMDxe/TLMMDxe.inf
-  INF Binaries/negroni/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
+  # negroni: SPMI channel abort in PmicDxe
+  # INF Binaries/negroni/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
 
   INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
 
@@ -76,8 +77,10 @@
   INF SiliciumPkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
 !endif
 
-  INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
-  INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
+  # negroni: SPMI channel abort in PmicDxe
+  # INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
+  # negroni: SPMI channel abort in PmicDxe
+  # INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/TsensDxe/TsensDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/DDRInfoDxe/DDRInfoDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
