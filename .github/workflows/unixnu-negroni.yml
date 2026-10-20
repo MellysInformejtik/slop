@@ -1,0 +1,93 @@
+name: unixnu-negroni
+
+# UniXNU 4 KiB XNU (xnu-10063.141.1 + UniXNU patches), prelinked against the unchanged iPad7,1 iPadOS 17.7.11
+# kernelcache, and the DarwinBoot payload volume for negroni (device repository: unixnu-negroni/).
+# The firmware and boot image come from uefi/negroni (shim + Mu-Silicium) and are not built here.
+#
+# Apple binaries (kernelcache-derived kernel, payload) leave the runner only encrypted with the
+# ARTIFACT_KEY secret: this repository is public. Decrypt with
+#   openssl enc -d -aes-256-cbc -pbkdf2 -in negroni-unixnu.tar.enc -pass file:KEYFILE | tar -x
+
+on:
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: unixnu build steps
+        default: kernel payload
+  push:
+    branches: [main]
+    paths:
+      - "unixnu-negroni/**"
+      - ".github/workflows/unixnu-negroni.yml"
+
+concurrency:
+  group: unixnu-negroni-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 300
+    env:
+      UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIQUE_CHIP_ID }}
+      JOBS: "4"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tools
+        run: |
+          brew install llvm mtools dtc cmake ninja unifdef
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: UniXNU
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/UniXNU/UniXNU.git "$RUNNER_TEMP/UniXNU"
+          git -C "$RUNNER_TEMP/UniXNU" log -1 --format='UniXNU %H %cd'
+
+      - name: Configure and fetch
+        working-directory: ${{ runner.temp }}/UniXNU
+        run: |
+          ./unixnu defconfig negroni_defconfig -D "$GITHUB_WORKSPACE/unixnu-negroni"
+          ./unixnu fetch
+          ./unixnu status
+          ./unixnu ipsw fetch
+
+      - name: Build
+        working-directory: ${{ runner.temp }}/UniXNU
+        run: ./unixnu build ${{ inputs.steps || 'kernel payload' }}
+
+      - name: Encrypt outputs
+        if: success()
+        working-directory: ${{ runner.temp }}/UniXNU
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          test -n "$ARTIFACT_KEY"
+          ls -la out/negroni/kernel out/negroni/payload || true
+          tar -cf - -C out/negroni kernel/kernel.macho payload |
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ARTIFACT_KEY -out "$RUNNER_TEMP/negroni-unixnu.tar.enc"
+          shasum -a 256 "$RUNNER_TEMP/negroni-unixnu.tar.enc"
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: negroni-unixnu-encrypted
+          path: ${{ runner.temp }}/negroni-unixnu.tar.enc
+          retention-days: 7
+
+      - name: Collect logs
+        if: always()
+        working-directory: ${{ runner.temp }}/UniXNU
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          cp -R out/negroni/logs "$RUNNER_TEMP/logs/" 2>/dev/null || true
+          cp out/state.json "$RUNNER_TEMP/logs/" 2>/dev/null || true
+          find out/negroni -maxdepth 2 -name '*.json' -exec cp {} "$RUNNER_TEMP/logs/" \; 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: negroni-unixnu-logs
+          path: ${{ runner.temp }}/logs
+          retention-days: 7
