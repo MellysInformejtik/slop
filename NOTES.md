@@ -458,3 +458,4 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 
 ### 2026-10-20 UniXNU option
 - Read UniXNU + UniXNU-sheng (clones in ~/ios-work, not in git). Plan in docs/negroni.md "Option: port to UniXNU". Blocker: no Mu-Silicium negroni UEFI; base it on WaipioPkg (r0qPkg). The 0086 hang debugging continues in parallel (waiting on the BT photo).
+- 2026-10-20: slot A restored to stock (boot_a, vendor_boot_a, dtbo_a, vbmeta_a from dtb/negroni/backup). OrangeFox ferrarri flashed to recovery_a (old recovery_a was not backed up). Firmware dumped read-only from OrangeFox into dtb/negroni/firmware/ (git-ignored, SHA256SUMS): xbl, xbl_config, uefi, abl, imagefv, uefisecapp, hyp, tz, devcfg, aop, aop_config, qupfw, cpucp, shrm, featenabler (all _a). userdata GPT: sda14, LBA 4096 B, first 0x2b52ec last 0x1cde4fa (104.6 GiB), for UniXNU board.toml [userdata].
