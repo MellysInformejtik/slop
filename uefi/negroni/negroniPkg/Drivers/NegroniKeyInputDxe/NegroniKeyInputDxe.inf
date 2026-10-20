@@ -25,6 +25,7 @@
   UefiLib
 
 [Protocols]
+  gEfiSimpleTextInputExProtocolGuid             ## PRODUCES
   gEfiSimpleTextInProtocolGuid                  ## PRODUCES
   gEfiDevicePathProtocolGuid                    ## PRODUCES
 

@@ -19,6 +19,7 @@
 #include <Library/UefiLib.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/SimpleTextIn.h>
+#include <Protocol/SimpleTextInEx.h>
 #include <Guid/EventGroup.h>
 #include <Guid/GlobalVariable.h>
 
@@ -41,7 +42,8 @@ typedef struct {
 STATIC NEGRONI_KEY_DEVICE_PATH  mPath = {
   {
     { HARDWARE_DEVICE_PATH, HW_VENDOR_DP, { sizeof (VENDOR_DEVICE_PATH), 0 } },
-    { 0x74921D8A, 0x54BD, 0x4855, { 0x94, 0xD4, 0x16, 0xC6, 0x9C, 0xC9, 0xCB, 0x7F } }
+    // Silicium's KeypadDevicePath (EFI_KEYPAD_DEVICE_GUID): its boot manager opens the menu on a Volume Up key notify here
+    { 0xD7F58A0E, 0xBED2, 0x4B5A, { 0xBB, 0x43, 0x8A, 0xB2, 0x3D, 0xD0, 0xE2, 0xB0 } }
   },
   { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE, { sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
 };
@@ -54,6 +56,14 @@ STATIC UINTN              mHead, mCount;
 STATIC UINTN              mFailures;
 STATIC EFI_EVENT          mTimer, mExit;
 STATIC EFI_HANDLE         mHandle;
+
+#define MAX_NOTIFY  8
+typedef struct {
+  BOOLEAN                  Used;
+  EFI_KEY_DATA             Key;
+  EFI_KEY_NOTIFY_FUNCTION  Function;
+} KEY_NOTIFY;
+STATIC KEY_NOTIFY  mNotify[MAX_NOTIFY];
 
 STATIC
 EFI_STATUS
@@ -95,6 +105,95 @@ KeyRead (
 
 STATIC EFI_SIMPLE_TEXT_INPUT_PROTOCOL  mInput = { KeyReset, KeyRead, NULL };
 
+// SimpleTextInputEx (what ButtonsDxe offers): the Silicium boot manager registers its Volume Up notify through it.
+STATIC
+EFI_STATUS
+EFIAPI
+KeyResetEx (
+  IN EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *This,
+  IN BOOLEAN                            ExtendedVerification
+  )
+{
+  return KeyReset (&mInput, ExtendedVerification);
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+KeyReadEx (
+  IN  EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *This,
+  OUT EFI_KEY_DATA                       *KeyData
+  )
+{
+  if (KeyData == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  KeyData->KeyState.KeyShiftState  = 0;
+  KeyData->KeyState.KeyToggleState = 0;
+  return KeyRead (&mInput, &KeyData->Key);
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+KeySetState (
+  IN EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *This,
+  IN EFI_KEY_TOGGLE_STATE               *KeyToggleState
+  )
+{
+  return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+KeyRegisterNotify (
+  IN  EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *This,
+  IN  EFI_KEY_DATA                       *KeyData,
+  IN  EFI_KEY_NOTIFY_FUNCTION            KeyNotificationFunction,
+  OUT VOID                               **NotifyHandle
+  )
+{
+  if ((KeyData == NULL) || (KeyNotificationFunction == NULL) || (NotifyHandle == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  for (UINTN Index = 0; Index < MAX_NOTIFY; Index++) {
+    if (!mNotify[Index].Used) {
+      mNotify[Index].Used     = TRUE;
+      mNotify[Index].Key      = *KeyData;
+      mNotify[Index].Function = KeyNotificationFunction;
+      *NotifyHandle           = &mNotify[Index];
+      return EFI_SUCCESS;
+    }
+  }
+
+  return EFI_OUT_OF_RESOURCES;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+KeyUnregisterNotify (
+  IN EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *This,
+  IN VOID                               *NotificationHandle
+  )
+{
+  KEY_NOTIFY  *Entry = NotificationHandle;
+
+  if ((Entry < &mNotify[0]) || (Entry >= &mNotify[MAX_NOTIFY]) || !Entry->Used) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Entry->Used = FALSE;
+  return EFI_SUCCESS;
+}
+
+STATIC EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  mInputEx = {
+  KeyResetEx, KeyReadEx, NULL, KeySetState, KeyRegisterNotify, KeyUnregisterNotify
+};
+
 // WaitForKey is checked by WaitForEvent/CheckEvent: it must be signaled again while keys remain queued.
 STATIC
 VOID
@@ -124,6 +223,20 @@ Push (
   mQueue[(mHead + mCount) % QUEUE_SIZE].UnicodeChar = Unicode;
   mCount++;
   gBS->SignalEvent (mInput.WaitForKey);
+
+  for (UINTN Index = 0; Index < MAX_NOTIFY; Index++) {
+    if (mNotify[Index].Used && (mNotify[Index].Key.Key.ScanCode == Scan) &&
+        (mNotify[Index].Key.Key.UnicodeChar == Unicode))
+    {
+      EFI_KEY_DATA  Data;
+
+      Data.Key.ScanCode                = Scan;
+      Data.Key.UnicodeChar             = Unicode;
+      Data.KeyState.KeyShiftState      = 0;
+      Data.KeyState.KeyToggleState     = 0;
+      mNotify[Index].Function (&Data);
+    }
+  }
 }
 
 STATIC
@@ -263,6 +376,8 @@ NegroniKeyInputDxeEntry (
     return Status;
   }
 
+  mInputEx.WaitForKeyEx = mInput.WaitForKey;
+
   Status = gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK, Poll, NULL, &mTimer);
   if (!EFI_ERROR (Status)) {
     Status = gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, OnExitBootServices, NULL, &gEfiEventExitBootServicesGuid, &mExit);
@@ -275,6 +390,8 @@ NegroniKeyInputDxeEntry (
                     &mPath,
                     &gEfiSimpleTextInProtocolGuid,
                     &mInput,
+                    &gEfiSimpleTextInputExProtocolGuid,
+                    &mInputEx,
                     NULL
                     );
   }

@@ -1,0 +1,60 @@
+;
+; NegroniTouch: Synaptics S3908 touchscreen, OnePlus 10 Pro (negroni, SM8450), via Mu-Silicium + ios-sweet.
+; ACPI device NEGT0001 (negroni SSDT). Virtual HID Framework below the driver (vhf lower filter).
+;
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider    = %ProviderName%
+CatalogFile = NegroniTouch.cat
+DriverVer   = 10/20/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+NegroniTouch.sys = 1
+
+[Manufacturer]
+%ProviderName% = Negroni, NTARM64
+
+[Negroni.NTARM64]
+%DeviceDesc% = NegroniTouch_Install, ACPI\NEGT0001
+
+[NegroniTouch_Install.NT]
+CopyFiles = NegroniTouch_CopyFiles
+
+[NegroniTouch_CopyFiles]
+NegroniTouch.sys
+
+[NegroniTouch_Install.NT.HW]
+AddReg = NegroniTouch_Filters
+
+[NegroniTouch_Filters]
+HKR,,"LowerFilters",0x00010000,"vhf"
+
+[NegroniTouch_Install.NT.Services]
+AddService = NegroniTouch, 0x00000002, NegroniTouch_Service
+
+[NegroniTouch_Service]
+DisplayName   = %DeviceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %13%\NegroniTouch.sys
+
+[NegroniTouch_Install.NT.Wdf]
+KmdfService = NegroniTouch, NegroniTouch_Wdf
+
+[NegroniTouch_Wdf]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+ProviderName = "ios-sweet"
+DiskName     = "NegroniTouch"
+DeviceDesc   = "Synaptics S3908 touchscreen (negroni)"

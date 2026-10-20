@@ -44,6 +44,7 @@
   # DTB from x0: payload ramdisk as a block device; keys through the SPMI observer
   INF negroniPkg/Drivers/NegroniBootMemoryDxe/NegroniBootMemoryDxe.inf
   INF negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
+  INF negroniPkg/Drivers/NegroniTouchDxe/NegroniTouchDxe.inf
   # The XNU loader is part of the firmware volume (as on sheng)
   # (no UniXNU: plain Mu BDS) INF DarwinBootPkg/Driver/DarwinBoot.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf

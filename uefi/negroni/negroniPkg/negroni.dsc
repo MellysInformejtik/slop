@@ -80,6 +80,7 @@
   # (no UniXNU: plain Mu BDS) DarwinBootPkg/Driver/DarwinBoot.inf
   negroniPkg/Drivers/NegroniBootMemoryDxe/NegroniBootMemoryDxe.inf
   negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
+  negroniPkg/Drivers/NegroniTouchDxe/NegroniTouchDxe.inf
 
   #
   # ACPI Tables
