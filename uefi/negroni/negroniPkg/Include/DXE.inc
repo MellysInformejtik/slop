@@ -41,6 +41,8 @@
   INF Binaries/negroni/MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF Binaries/negroni/MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
 
+  # The XNU loader is part of the firmware volume (as on sheng)
+  INF DarwinBootPkg/Driver/DarwinBoot.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf
   INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
 
