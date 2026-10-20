@@ -1,0 +1,30 @@
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = NegroniTouchDxe
+  FILE_GUID                      = 4B2E9D71-0C6A-4F83-9E15-7A3D2C8B5F60
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = NegroniTouchDxeEntry
+
+[Sources]
+  NegroniTouchDxe.c
+  # shared with the Windows and XNU drivers: drivers/negroni-touch in ios-sweet (copied here by shim-mu.sh)
+  tlmm.h
+  geni_i2c.h
+  syna_tcm.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  QcomPkg/QcomPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  DebugLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiClockProtocolGuid
+
+[Depex]
+  gEfiClockProtocolGuid
