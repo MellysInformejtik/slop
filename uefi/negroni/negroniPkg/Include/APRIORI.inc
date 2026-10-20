@@ -55,7 +55,8 @@ APRIORI DXE {
 
   INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf
 
-  INF Binaries/negroni/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
+  # negroni: QSEE call fails (result -1, Status 7)
+  # INF Binaries/negroni/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
 
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
   INF Binaries/negroni/QcomPkg/Drivers/DisplayDxe/DisplayDxe.inf
@@ -89,7 +90,8 @@ APRIORI DXE {
 
   INF Binaries/negroni/QcomPkg/Drivers/UsbMsdDxe/UsbMsdDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
-  INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
+  # negroni: needs UsbPwrCtrlDxe (PMIC), loops otherwise
+  # INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbInitDxe/UsbInitDxe.inf
   # negroni: SPMI channel abort in PmicDxe
   # INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf

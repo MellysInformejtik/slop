@@ -69,7 +69,8 @@
   INF Binaries/negroni/QcomPkg/Drivers/GpiDxe/GpiDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/SPIDxe/SPIDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/SdccDxe/SdccDxe.inf
-  INF Binaries/negroni/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
+  # negroni: QSEE call fails (result -1, Status 7)
+  # INF Binaries/negroni/QcomPkg/Drivers/FeatureEnablerDxe/FeatureEnablerDxe.inf
 
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 1
   INF Binaries/negroni/QcomPkg/Drivers/DisplayDxe/DisplayDxe.inf
@@ -93,7 +94,8 @@
 
   INF Binaries/negroni/QcomPkg/Drivers/UsbMsdDxe/UsbMsdDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
-  INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
+  # negroni: needs UsbPwrCtrlDxe (PMIC), loops otherwise
+  # INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbInitDxe/UsbInitDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UCDxe/UCDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/RNGDxe/RngDxe.inf
