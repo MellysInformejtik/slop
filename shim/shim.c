@@ -452,6 +452,10 @@ void shim_main(uint64_t dtb)
 #endif
 #endif
 
+	/* A Mu-Silicium UEFI in the ramdisk: no shim output at all (returns only on error). */
+	const char *uefi_why = loader_uefi(dtb);
+	(void)uefi_why;
+
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);

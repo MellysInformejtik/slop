@@ -86,17 +86,6 @@ typedef void (*uefi_entry_t)(uint64_t dtb);
 #define UEFI_FD_BASE	0xA7100000UL
 #define UEFI_FD_MAX	0x00300000UL
 
-static void uefi_wait_s(unsigned s)
-{
-	uint64_t f, t, end;
-	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
-	__asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(t));
-	end = t + f * s;
-	do
-		__asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(t));
-	while (t < end);
-}
-
 static int fv_ok(uintptr_t rd)
 {
 	const char *m = (const char *)(rd + 0x28);
@@ -112,13 +101,21 @@ static const char *uefi_boot(uintptr_t dtb, uint64_t rd_start, uint64_t rd_end)
 		return "UEFI FD too big";
 	if (rd_end > UEFI_FD_BASE && rd_start < UEFI_FD_BASE + UEFI_FD_MAX)
 		return "ramdisk overlaps UEFI FD";
-	con_hex2("UEFI", "fd=", UEFI_FD_BASE, "size=", size);
 	copy64(UEFI_FD_BASE, rd_start, size);
-	con_str("UEFI", "jumping in 10s");
-	uefi_wait_s(10);
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 	((uefi_entry_t)UEFI_FD_BASE)(dtb);
 	return "UEFI returned";
+}
+
+/* Silent and first: a Mu FV in the ramdisk boots straight away, before any shim output. */
+const char *loader_uefi(uintptr_t dtb)
+{
+	uint64_t rd_start, rd_end;
+
+	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
+	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end) || !fv_ok(rd_start))
+		return "no UEFI FV";
+	return uefi_boot(dtb, rd_start, rd_end);
 }
 
 const char *loader_boot(uintptr_t dtb)
