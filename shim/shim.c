@@ -38,6 +38,15 @@
 #define PSCI_SYSTEM_RESET2	0xc4000012UL
 #define SMCCC_VERSION		0x80000000UL
 
+/*
+ * Gunyah (SM8450) virtual watchdog, SMCCC vendor-hyp fast calls (Linux
+ * drivers/watchdog/gunyah_wdt.c). ABL leaves it running: unserviced, the
+ * phone resets 10-20 s after the jump to us.
+ */
+#define GUNYAH_WDT_CONTROL	0x86000005UL
+#define GUNYAH_WDT_STATUS	0x86000006UL
+#define WDT_CTRL_DISABLE	2UL	/* bit 1 reserved, must be 1; bit 0 = enable */
+
 #define NR_CPUS			8
 
 #define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
@@ -389,11 +398,24 @@ static void probe_board(uint64_t dtb)
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+#if defined(BOARD_NEGRONI)
+	int64_t wdt = smc(GUNYAH_WDT_CONTROL, WDT_CTRL_DISABLE, 0, 0);
+#if defined(PROBE_RESET_NOW)
+	/* Display-free liveness test: straight back to fastboot if we run at all. */
+	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+	__asm__ volatile("dsb sy" ::: "memory");
+	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
+#endif
+#endif
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
 	con_str("SHIM", BOARD_NAME " milestone 4: xnu loader");
+#if defined(BOARD_NEGRONI)
+	/* 0 = disabled; -1 = no Gunyah watchdog call (expect a reset in seconds) */
+	con_hex2("GH WDT", "off=", (uint32_t)wdt, "status=", (uint32_t)smc(GUNYAH_WDT_STATUS, 0, 0, 0));
+#endif
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);

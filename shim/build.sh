@@ -14,7 +14,8 @@ negroni) DTB=${DTB:-../dtb/negroni/dtb}; BOARD_DEF=-DBOARD_NEGRONI ;;
 *) echo "error: unknown BOARD=$BOARD" >&2; exit 1 ;;
 esac
 [ -f "$DTB" ] || { echo "error: $DTB missing (set DTB=...)" >&2; exit 1; }
-CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra $BOARD_DEF"
+# EXTRA_CFLAGS=-DPROBE_RESET_NOW: negroni liveness test (see shim_main)
+CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra $BOARD_DEF ${EXTRA_CFLAGS:-}"
 mkdir -p out
 for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
