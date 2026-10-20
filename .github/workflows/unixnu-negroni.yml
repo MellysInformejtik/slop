@@ -40,6 +40,27 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Authenticated GitHub API for UniXNU's Python fetches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # prepare-xnu-source.py reads apple-oss-distributions/xnu through api.github.com anonymously,
+          # which the shared runner IPs exhaust (HTTP 403 rate limit). Add the job token to those requests.
+          mkdir -p "$RUNNER_TEMP/pyauth"
+          cat > "$RUNNER_TEMP/pyauth/sitecustomize.py" <<'PY'
+          import os, urllib.request
+          _token = os.environ.get('GH_API_TOKEN')
+          class _GitHubAuth(urllib.request.BaseHandler):
+              def http_request(self, req):
+                  if _token and req.host == 'api.github.com':
+                      req.add_header('Authorization', 'Bearer ' + _token)
+                  return req
+              https_request = http_request
+          urllib.request.install_opener(urllib.request.build_opener(_GitHubAuth()))
+          PY
+          echo "PYTHONPATH=$RUNNER_TEMP/pyauth" >> "$GITHUB_ENV"
+          echo "GH_API_TOKEN=$GH_TOKEN" >> "$GITHUB_ENV"
+
       - name: UniXNU
         run: |
           git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/UniXNU/UniXNU.git "$RUNNER_TEMP/UniXNU"
