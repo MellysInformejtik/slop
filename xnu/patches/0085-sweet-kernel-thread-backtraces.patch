@@ -1,19 +1,18 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 9db1d27..a80901c 100644
+index 9db1d27..58bf270 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -43,6 +43,10 @@
+@@ -43,6 +43,9 @@
  #include <kern/restartable.h>
  #include <kern/socd_client.h>
  #include <kern/thread.h>
 +#if defined(SWEET)
 +#include <kern/task.h>
-+#include <kern/thread_kernel_state.h>
 +#endif
  #include <kern/zalloc_internal.h>
  #include <mach/exception.h>
  #include <mach/arm/traps.h>
-@@ -1847,6 +1851,57 @@ handle_simd_trap(arm_saved_state_t *state, uint32_t esr)
+@@ -1847,6 +1850,57 @@ handle_simd_trap(arm_saved_state_t *state, uint32_t esr)
  	__builtin_unreachable();
  }
  
@@ -71,7 +70,7 @@ index 9db1d27..a80901c 100644
  void
  sleh_irq(arm_saved_state_t *state)
  {
-@@ -1874,6 +1929,9 @@ sleh_irq(arm_saved_state_t *state)
+@@ -1874,6 +1928,9 @@ sleh_irq(arm_saved_state_t *state)
  		if ((n & (n - 1)) == 0) {
  			kprintf("SWEET VTIMER irq %u tval %lld\n", n, (long long)(int32_t)__builtin_arm_rsr64("CNTV_TVAL_EL0"));
  		}
