@@ -78,6 +78,8 @@
   UniXNUPkg/Application/UniXNU/UniXNU.inf
   UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
   DarwinBootPkg/Driver/DarwinBoot.inf
+  negroniPkg/Drivers/NegroniBootMemoryDxe/NegroniBootMemoryDxe.inf
+  negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
 
   #
   # ACPI Tables

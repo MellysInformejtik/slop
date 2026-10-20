@@ -1,0 +1,662 @@
+diff --git a/Silicon/Silicium/SiliciumPkg/Sec/AArch64/ModuleEntryPoint.S b/Silicon/Silicium/SiliciumPkg/Sec/AArch64/ModuleEntryPoint.S
+index 0c05ffa..5009631 100644
+--- a/Silicon/Silicium/SiliciumPkg/Sec/AArch64/ModuleEntryPoint.S
++++ b/Silicon/Silicium/SiliciumPkg/Sec/AArch64/ModuleEntryPoint.S
+@@ -1,63 +1,73 @@
+-//
+-// Copyright (c) 2011 - 2025, Arm Limited. All rights reserved.
+-// SPDX-License-Identifier: BSD-2-Clause-Patent
+-//
+-
+-#include <AsmMacroLib.h>
+-
+-#include <Library/ArmLib.h>
+-
+-//
+-// SCTRL_EL1 Bits
+-//
+-.set CTRL_SPAN_BIT, BIT23
+-
+-ASM_FUNC (_ModuleEntryPoint)
+-  // Do Platform Specific Initialization
+-  bl    ASM_PFX (PlatformAssemblyInitialize)
+-
+-  // Disable SPAN
+-  EL1_OR_EL2 (x0)
+-1:mrs   x0, sctlr_el1
+-  orr   x0, x0, #CTRL_SPAN_BIT
+-  msr   sctlr_el1, x0
+-2:nop
+-
+-  // Enable Floating Point
+-  bl    ASM_PFX (ArmEnableVFP)
+-
+-  // Setup Exception Vector
+-  EL1_OR_EL2 (x0)
+-1:bl    ASM_PFX (SetupExceptionLevel1)
+-  b     ASM_PFX (MainEntryPoint)
+-2:bl    ASM_PFX (SetupExceptionLevel2)
+-  b     ASM_PFX (MainEntryPoint)
+-
+-ASM_PFX (MainEntryPoint):
+-  // Get Stack Details
+-  MOV64 (x0, FixedPcdGet64 (PcdCPUCoresStackBase))
+-  MOV32 (x1, FixedPcdGet32 (PcdCPUCorePrimaryStackSize))
+-
+-  // Set Stack End Address
+-  add   x2, x0, x1
+-
+-  // Set Stack Pointer
+-  mov   sp, x2
+-
+-  // Clear Stack
+-  mov   x3, xzr
+-0:stp   x3, x3, [x0], #16
+-  cmp   x0, x2
+-  b.lt  0b
+-
+-  // Set Jump Location
+-  ldr   x0, =ASM_PFX (SecEntry)
+-
+-  // Clear Frame Pointer
+-  mov   x29, xzr
+-
+-  // Jump to C Code
+-  blr   x0
+-
+-  // Do Infinite Spin
+-  b     .
++//
++// Copyright (c) 2011 - 2025, Arm Limited. All rights reserved.
++// SPDX-License-Identifier: BSD-2-Clause-Patent
++//
++
++#include <AsmMacroLib.h>
++
++#include <Library/ArmLib.h>
++
++//
++// SCTRL_EL1 Bits
++//
++.set CTRL_SPAN_BIT, BIT23
++
++ASM_FUNC (_ModuleEntryPoint)
++  // Keep x0 (the DT a Linux-style loader hands over) for the entry-argument HOB (from uefi-sheng)
++  adr   x1, ASM_PFX (gSecEntryArg0)
++  str   x0, [x1]
++
++  // Do Platform Specific Initialization
++  bl    ASM_PFX (PlatformAssemblyInitialize)
++
++  // Disable SPAN
++  EL1_OR_EL2 (x0)
++1:mrs   x0, sctlr_el1
++  orr   x0, x0, #CTRL_SPAN_BIT
++  msr   sctlr_el1, x0
++2:nop
++
++  // Enable Floating Point
++  bl    ASM_PFX (ArmEnableVFP)
++
++  // Setup Exception Vector
++  EL1_OR_EL2 (x0)
++1:bl    ASM_PFX (SetupExceptionLevel1)
++  b     ASM_PFX (MainEntryPoint)
++2:bl    ASM_PFX (SetupExceptionLevel2)
++  b     ASM_PFX (MainEntryPoint)
++
++ASM_PFX (MainEntryPoint):
++  // Get Stack Details
++  MOV64 (x0, FixedPcdGet64 (PcdCPUCoresStackBase))
++  MOV32 (x1, FixedPcdGet32 (PcdCPUCorePrimaryStackSize))
++
++  // Set Stack End Address
++  add   x2, x0, x1
++
++  // Set Stack Pointer
++  mov   sp, x2
++
++  // Clear Stack
++  mov   x3, xzr
++0:stp   x3, x3, [x0], #16
++  cmp   x0, x2
++  b.lt  0b
++
++  // Set Jump Location
++  ldr   x0, =ASM_PFX (SecEntry)
++
++  // Clear Frame Pointer
++  mov   x29, xzr
++
++  // Jump to C Code
++  blr   x0
++
++  // Do Infinite Spin
++  b     .
++
++  // First argument of the previous stage, written once at entry
++  .align 3
++  .global ASM_PFX (gSecEntryArg0)
++ASM_PFX (gSecEntryArg0):
++  .quad 0
+diff --git a/Silicon/Silicium/SiliciumPkg/Sec/Sec.c b/Silicon/Silicium/SiliciumPkg/Sec/Sec.c
+index 8d586b3..1cafe68 100644
+--- a/Silicon/Silicium/SiliciumPkg/Sec/Sec.c
++++ b/Silicon/Silicium/SiliciumPkg/Sec/Sec.c
+@@ -1,174 +1,184 @@
+-/**
+-  Copyright (c) 2011-2017, ARM Limited. All rights reserved.
+-  SPDX-License-Identifier: BSD-2-Clause-Patent
+-**/
+-
+-#include <Library/PcdLib.h>
+-#include <Library/DebugLib.h>
+-#include <Library/PrePiLib.h>
+-#include <Library/DebugAgentLib.h>
+-#include <Library/BaseMemoryLib.h>
+-#include <Library/SerialPortLib.h>
+-#include <Library/PlatformSecLib.h>
+-#include <Library/PrePiHobListPointerLib.h>
+-#include <Library/CacheMaintenanceLib.h>
+-#include <Library/MemoryMapHelperLib.h>
+-#include <Library/TimerLib.h>
+-#include <Library/HobLib.h>
+-
+-#include "Sec.h"
+-
+-#ifndef MDEPKG_NDEBUG
+-STATIC
+-VOID
+-ClearFrameBuffer (VOID)
+-{
+-  EFI_MEMORY_REGION_DESCRIPTOR FrameBufferRegion;
+-
+-  // Locate "Display Reserved" Memory Region
+-  LocateMemoryRegionByName ("Display Reserved", &FrameBufferRegion);
+-  LocateMemoryRegionByName ("Display_Reserved", &FrameBufferRegion);
+-
+-  // Clear Memory Region
+-  if (FrameBufferRegion.Address != 0 && FrameBufferRegion.Length != 0) {
+-    ZeroMem ((VOID *)FrameBufferRegion.Address, FrameBufferRegion.Length);
+-  }
+-}
+-
+-STATIC
+-VOID
+-PrintFirmwareVersion (VOID)
+-{
+-  // Clear Frame Buffer
+-  ClearFrameBuffer ();
+-
+-  // Print UEFI Version Message
+-  DEBUG ((EFI_D_WARN, "\n"));
+-  DEBUG ((EFI_D_WARN, "Project Silicium for %a %a\n",            FixedPcdGetPtr (PcdSmbiosSystemManufacturer), FixedPcdGetPtr (PcdSmbiosSystemModel)));
+-  DEBUG ((EFI_D_WARN, "Firmware Version %s Build at %a on %a\n", PcdGetPtr (PcdFirmwareVersionString), __TIME__, __DATE__));
+-  DEBUG ((EFI_D_WARN, "\n"));
+-}
+-#endif
+-
+-STATIC
+-EFI_STATUS
+-InitializeMemory (VOID)
+-{
+-  EFI_STATUS                    Status;
+-  EFI_MEMORY_REGION_DESCRIPTOR  UefiMemoryRegion;
+-  EFI_HOB_HANDOFF_INFO_TABLE   *HobList;
+-
+-  // Locate "DXE Heap" Memory Region
+-  LocateMemoryRegionByName ("DXE Heap", &UefiMemoryRegion);
+-  LocateMemoryRegionByName ("DXE_Heap", &UefiMemoryRegion);
+-
+-  // Save UEFI Memory Details
+-  UINTN UefiMemoryBase = UefiMemoryRegion.Address;
+-  UINTN UefiMemorySize = UefiMemoryRegion.Length;
+-
+-  // Verify UEFI Memory Base
+-  if (UefiMemoryBase == 0 && UefiMemorySize == 0) {
+-    DEBUG ((EFI_D_ERROR, "Failed to Locate \"DXE Heap\" Memory Region!\n"));
+-    return EFI_NOT_FOUND;
+-  }
+-
+-  // Initialize HOB List
+-  HobList = HobConstructor ((VOID *)UefiMemoryBase, UefiMemorySize, (VOID *)UefiMemoryBase, (VOID *)(UefiMemoryBase + UefiMemorySize));
+-  PrePeiSetHobList (HobList);
+-
+-  // Initialize MMU & Memory HOBs
+-  Status = MemoryPeim (UefiMemoryBase, UefiMemorySize);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  // Build Stack HOB
+-  BuildStackHob (FixedPcdGet64 (PcdCPUCoresStackBase), FixedPcdGet32 (PcdCPUCorePrimaryStackSize));
+-
+-  return EFI_SUCCESS;
+-}
+-
+-STATIC
+-VOID
+-SecMain (VOID)
+-{
+-  EFI_STATUS Status;
+-
+-  // Do Platform Specific Initialization
+-  PlatformInitialize ();
+-
+-#ifndef MDEPKG_NDEBUG
+-  // Initialize Serial Port
+-  Status = SerialPortInitialize ();
+-  if (EFI_ERROR (Status)) {
+-    return;
+-  }
+-
+-  // Print Firmware Version
+-  PrintFirmwareVersion ();
+-
+-  // Initialize Debug Agent
+-  InitializeDebugAgent (DEBUG_AGENT_INIT_POSTMEM_SEC, NULL, NULL);
+-  SaveAndSetDebugTimerInterrupt (TRUE);
+-#endif
+-
+-  // Initialize Memory
+-  Status = InitializeMemory ();
+-  if (EFI_ERROR (Status)) {
+-    return;
+-  }
+-
+-  // Build CPU HOB
+-  BuildCpuHob (ArmGetPhysicalAddressBits (), PcdGet8 (PcdPrePiCpuIoSize));
+-
+-  // Set the Boot Mode
+-  SetBootMode (BOOT_WITH_DEFAULT_SETTINGS);
+-
+-  // Initialize Platform HOBs
+-  Status = PlatformPeim ();
+-  if (EFI_ERROR (Status)) {
+-    return;
+-  }
+-
+-  // Run Library Cconstructors
+-  ProcessLibraryConstructorList ();
+-
+-  // Decompress all FVs
+-  Status = DecompressFirstFv ();
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "Failed to Decompress FV! Status = %r\n", Status));
+-    return;
+-  }
+-
+-  // Load DXE Core
+-  Status = LoadDxeCoreFromFv (NULL, 0);
+-  if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_ERROR, "Failed to Load DXE Core! Status = %r\n", Status));
+-  }
+-}
+-
+-VOID
+-SecEntry (VOID)
+-{
+-  // Disable Data Cache
+-  ArmDisableDataCache ();
+-
+-  // Invalidate Instruction Cache
+-  ArmInvalidateInstructionCache ();
+-
+-  // Enable Instruction Cache
+-  ArmEnableInstructionCache ();
+-
+-  // Invalidate Stack & UEFI FD D-Cache
+-  InvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdCPUCoresStackBase), FixedPcdGet32 (PcdCPUCorePrimaryStackSize));
+-  InvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdFdBaseAddress),     FixedPcdGet32 (PcdFdSize));
+-
+-  // Verify Exception Vector Table
+-  ASSERT (((UINTN)SecVectorTable & ARM_VECTOR_TABLE_ALIGNMENT) == 0);
+-
+-  // Enable new Exception Vector Table
+-  ArmWriteVBar ((UINTN)SecVectorTable);
+-
+-  // Enter Main SEC Function
+-  SecMain ();
+-}
++/**
++  Copyright (c) 2011-2017, ARM Limited. All rights reserved.
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <Library/PcdLib.h>
++#include <Library/DebugLib.h>
++#include <Library/PrePiLib.h>
++#include <Library/DebugAgentLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/SerialPortLib.h>
++#include <Library/PlatformSecLib.h>
++#include <Library/PrePiHobListPointerLib.h>
++#include <Library/CacheMaintenanceLib.h>
++#include <Library/MemoryMapHelperLib.h>
++#include <Library/TimerLib.h>
++#include <Library/HobLib.h>
++
++#include "Sec.h"
++
++// First argument (x0) of the previous stage, saved by ModuleEntryPoint.S
++extern UINT64  gSecEntryArg0;
++
++#ifndef MDEPKG_NDEBUG
++STATIC
++VOID
++ClearFrameBuffer (VOID)
++{
++  EFI_MEMORY_REGION_DESCRIPTOR FrameBufferRegion;
++
++  // Locate "Display Reserved" Memory Region
++  LocateMemoryRegionByName ("Display Reserved", &FrameBufferRegion);
++  LocateMemoryRegionByName ("Display_Reserved", &FrameBufferRegion);
++
++  // Clear Memory Region
++  if (FrameBufferRegion.Address != 0 && FrameBufferRegion.Length != 0) {
++    ZeroMem ((VOID *)FrameBufferRegion.Address, FrameBufferRegion.Length);
++  }
++}
++
++STATIC
++VOID
++PrintFirmwareVersion (VOID)
++{
++  // Clear Frame Buffer
++  ClearFrameBuffer ();
++
++  // Print UEFI Version Message
++  DEBUG ((EFI_D_WARN, "\n"));
++  DEBUG ((EFI_D_WARN, "Project Silicium for %a %a\n",            FixedPcdGetPtr (PcdSmbiosSystemManufacturer), FixedPcdGetPtr (PcdSmbiosSystemModel)));
++  DEBUG ((EFI_D_WARN, "Firmware Version %s Build at %a on %a\n", PcdGetPtr (PcdFirmwareVersionString), __TIME__, __DATE__));
++  DEBUG ((EFI_D_WARN, "\n"));
++}
++#endif
++
++STATIC
++EFI_STATUS
++InitializeMemory (VOID)
++{
++  EFI_STATUS                    Status;
++  EFI_MEMORY_REGION_DESCRIPTOR  UefiMemoryRegion;
++  EFI_HOB_HANDOFF_INFO_TABLE   *HobList;
++
++  // Locate "DXE Heap" Memory Region
++  LocateMemoryRegionByName ("DXE Heap", &UefiMemoryRegion);
++  LocateMemoryRegionByName ("DXE_Heap", &UefiMemoryRegion);
++
++  // Save UEFI Memory Details
++  UINTN UefiMemoryBase = UefiMemoryRegion.Address;
++  UINTN UefiMemorySize = UefiMemoryRegion.Length;
++
++  // Verify UEFI Memory Base
++  if (UefiMemoryBase == 0 && UefiMemorySize == 0) {
++    DEBUG ((EFI_D_ERROR, "Failed to Locate \"DXE Heap\" Memory Region!\n"));
++    return EFI_NOT_FOUND;
++  }
++
++  // Initialize HOB List
++  HobList = HobConstructor ((VOID *)UefiMemoryBase, UefiMemorySize, (VOID *)UefiMemoryBase, (VOID *)(UefiMemoryBase + UefiMemorySize));
++  PrePeiSetHobList (HobList);
++
++  // Initialize MMU & Memory HOBs
++  Status = MemoryPeim (UefiMemoryBase, UefiMemorySize);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  // Build Stack HOB
++  BuildStackHob (FixedPcdGet64 (PcdCPUCoresStackBase), FixedPcdGet32 (PcdCPUCorePrimaryStackSize));
++
++  return EFI_SUCCESS;
++}
++
++STATIC
++VOID
++SecMain (VOID)
++{
++  EFI_STATUS Status;
++
++  // Do Platform Specific Initialization
++  PlatformInitialize ();
++
++#ifndef MDEPKG_NDEBUG
++  // Initialize Serial Port
++  Status = SerialPortInitialize ();
++  if (EFI_ERROR (Status)) {
++    return;
++  }
++
++  // Print Firmware Version
++  PrintFirmwareVersion ();
++
++  // Initialize Debug Agent
++  InitializeDebugAgent (DEBUG_AGENT_INIT_POSTMEM_SEC, NULL, NULL);
++  SaveAndSetDebugTimerInterrupt (TRUE);
++#endif
++
++  // Initialize Memory
++  Status = InitializeMemory ();
++  if (EFI_ERROR (Status)) {
++    return;
++  }
++
++  // Build CPU HOB
++  BuildCpuHob (ArmGetPhysicalAddressBits (), PcdGet8 (PcdPrePiCpuIoSize));
++
++  // Set the Boot Mode
++  SetBootMode (BOOT_WITH_DEFAULT_SETTINGS);
++
++  // Initialize Platform HOBs
++  Status = PlatformPeim ();
++  if (EFI_ERROR (Status)) {
++    return;
++  }
++
++  // Pass on x0 of the previous stage (a DT address), for the boot-memory DXE
++  {
++    UINT64  EntryArg = gSecEntryArg0;
++
++    BuildGuidDataHob (&gSiliciumEntryArgHobGuid, &EntryArg, sizeof (EntryArg));
++  }
++
++  // Run Library Cconstructors
++  ProcessLibraryConstructorList ();
++
++  // Decompress all FVs
++  Status = DecompressFirstFv ();
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "Failed to Decompress FV! Status = %r\n", Status));
++    return;
++  }
++
++  // Load DXE Core
++  Status = LoadDxeCoreFromFv (NULL, 0);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "Failed to Load DXE Core! Status = %r\n", Status));
++  }
++}
++
++VOID
++SecEntry (VOID)
++{
++  // Disable Data Cache
++  ArmDisableDataCache ();
++
++  // Invalidate Instruction Cache
++  ArmInvalidateInstructionCache ();
++
++  // Enable Instruction Cache
++  ArmEnableInstructionCache ();
++
++  // Invalidate Stack & UEFI FD D-Cache
++  InvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdCPUCoresStackBase), FixedPcdGet32 (PcdCPUCorePrimaryStackSize));
++  InvalidateDataCacheRange ((VOID *)FixedPcdGet64 (PcdFdBaseAddress),     FixedPcdGet32 (PcdFdSize));
++
++  // Verify Exception Vector Table
++  ASSERT (((UINTN)SecVectorTable & ARM_VECTOR_TABLE_ALIGNMENT) == 0);
++
++  // Enable new Exception Vector Table
++  ArmWriteVBar ((UINTN)SecVectorTable);
++
++  // Enter Main SEC Function
++  SecMain ();
++}
+diff --git a/Silicon/Silicium/SiliciumPkg/Sec/Sec.inf b/Silicon/Silicium/SiliciumPkg/Sec/Sec.inf
+index 79afd19..3d9868d 100644
+--- a/Silicon/Silicium/SiliciumPkg/Sec/Sec.inf
++++ b/Silicon/Silicium/SiliciumPkg/Sec/Sec.inf
+@@ -1,69 +1,70 @@
+-##
+-#  Copyright (c) 2015 Hewlett-Packard Development Company, L.P.
+-#  Copyright (c) 2011-2017, ARM Ltd. All rights reserved.
+-#  Copyright (c) 2020, Arm Limited. All rights reserved.
+-#
+-#  SPDX-License-Identifier: BSD-2-Clause-Patent
+-##
+-
+-[Defines]
+-  INF_VERSION                    = 0x00010005
+-  BASE_NAME                      = Sec
+-  FILE_GUID                      = 9AFFB503-E643-4141-8B90-17E8588B1D35
+-  MODULE_TYPE                    = SEC
+-  VERSION_STRING                 = 1.0
+-
+-[Sources]
+-  Sec.c
+-
+-[Sources.AArch64]
+-  AArch64/ArchSec.c
+-  AArch64/Exception.S
+-  AArch64/Helper.S
+-  AArch64/ModuleEntryPoint.S
+-
+-[Packages]
+-  ArmPkg/ArmPkg.dec
+-  MdePkg/MdePkg.dec
+-  ArmPlatformPkg/ArmPlatformPkg.dec
+-  MdeModulePkg/MdeModulePkg.dec
+-  EmbeddedPkg/EmbeddedPkg.dec
+-  SiliciumPkg/SiliciumPkg.dec
+-
+-[LibraryClasses]
+-  ArmLib
+-  PrePiLib
+-  DebugLib
+-  DebugAgentLib
+-  BaseMemoryLib
+-  PlatformSecLib
+-  PrePiHobListPointerLib
+-  CacheMaintenanceLib
+-  MemoryMapHelperLib
+-  MemoryInitPeiLib
+-  PlatformPeiLib
+-  SerialPortLib
+-  PrintLib
+-  TimerLib
+-  HobLib
+-
+-[Ppis]
+-  gArmMpCoreInfoPpiGuid
+-
+-[Guids]
+-  gArmMpCoreInfoGuid
+-
+-[Pcd]
+-  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString
+-
+-[FixedPcd]
+-  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase
+-  gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize
+-
+-  gArmTokenSpaceGuid.PcdFdBaseAddress
+-  gArmTokenSpaceGuid.PcdFdSize
+-
+-  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemManufacturer
+-  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel
+-
+-  gEmbeddedTokenSpaceGuid.PcdPrePiCpuIoSize
++##
++#  Copyright (c) 2015 Hewlett-Packard Development Company, L.P.
++#  Copyright (c) 2011-2017, ARM Ltd. All rights reserved.
++#  Copyright (c) 2020, Arm Limited. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = Sec
++  FILE_GUID                      = 9AFFB503-E643-4141-8B90-17E8588B1D35
++  MODULE_TYPE                    = SEC
++  VERSION_STRING                 = 1.0
++
++[Sources]
++  Sec.c
++
++[Sources.AArch64]
++  AArch64/ArchSec.c
++  AArch64/Exception.S
++  AArch64/Helper.S
++  AArch64/ModuleEntryPoint.S
++
++[Packages]
++  ArmPkg/ArmPkg.dec
++  MdePkg/MdePkg.dec
++  ArmPlatformPkg/ArmPlatformPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  EmbeddedPkg/EmbeddedPkg.dec
++  SiliciumPkg/SiliciumPkg.dec
++
++[LibraryClasses]
++  ArmLib
++  PrePiLib
++  DebugLib
++  DebugAgentLib
++  BaseMemoryLib
++  PlatformSecLib
++  PrePiHobListPointerLib
++  CacheMaintenanceLib
++  MemoryMapHelperLib
++  MemoryInitPeiLib
++  PlatformPeiLib
++  SerialPortLib
++  PrintLib
++  TimerLib
++  HobLib
++
++[Ppis]
++  gArmMpCoreInfoPpiGuid
++
++[Guids]
++  gArmMpCoreInfoGuid
++  gSiliciumEntryArgHobGuid
++
++[Pcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFirmwareVersionString
++
++[FixedPcd]
++  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase
++  gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize
++
++  gArmTokenSpaceGuid.PcdFdBaseAddress
++  gArmTokenSpaceGuid.PcdFdSize
++
++  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemManufacturer
++  gSiliciumPkgTokenSpaceGuid.PcdSmbiosSystemModel
++
++  gEmbeddedTokenSpaceGuid.PcdPrePiCpuIoSize
+diff --git a/Silicon/Silicium/SiliciumPkg/SiliciumPkg.dec b/Silicon/Silicium/SiliciumPkg/SiliciumPkg.dec
+index 99cd697..5b5f4b1 100644
+--- a/Silicon/Silicium/SiliciumPkg/SiliciumPkg.dec
++++ b/Silicon/Silicium/SiliciumPkg/SiliciumPkg.dec
+@@ -8,6 +8,9 @@
+   Include                              # Root Include for the Package
+ 
+ [Guids]
++  # HOB holding x0 the previous stage entered SEC with (a DT address)
++  gSiliciumEntryArgHobGuid            = { 0xDAEE82E6, 0x8090, 0x4E72, { 0xBF, 0xB9, 0x78, 0xC1, 0x3C, 0xD4, 0xE3, 0x59 } }
++
+   gSiliciumPkgTokenSpaceGuid          = { 0x055720A6, 0xA739, 0x0047, { 0xBE, 0xC1, 0x67, 0xFC, 0x38, 0x34, 0x54, 0x53 } }
+ 
+ [Protocols]
