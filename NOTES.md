@@ -472,3 +472,4 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   - Mu memory map: "Kernel RAM" region 0x841000000+0x13F000000. DarwinBoot's 2 MiB-aligned window then lands at 0x841004000, which keeps a 32 MiB-aligned VA-PA delta for the 16K kernel.
   - Build: `ESP=esp.img uefi/negroni/shim-mu.sh`. It appends the FAT after the FV at the 1 MiB boundary, where NegroniBootMemoryDxe skips the FV.
   - userdata is erased, so the root will not be found until ios16-root.img is reflashed.
+- 2026-10-20 **The iOS 16 kernel boots through Mu + UniXNU + DarwinBoot on negroni.** The XNU log reaches the SWEET VTIMER traces (as with the shim loader). Fixes on the way: the entry path must use backslashes ('\Payloads\kernel.macho'), and DarwinBoot now keeps a refusal on screen 20 s (uefi/negroni/DarwinBoot/refusal-on-screen.patch). Next: reflash userdata with ios16-root.img, then the pre-bsd_init hang (0086 BT).

@@ -25,7 +25,8 @@ title = "ios-sweet"
 id = "ios16"
 title = "iOS 16 (ios-sweet XNU)"
 type = "xnu"
-path = "Payloads/kernel.macho"
+# UEFI FAT paths: backslashes (DarwinBoot passes the path through unchanged)
+path = '\Payloads\kernel.macho'
 args = "{cmdline}"
 '''
 

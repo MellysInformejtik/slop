@@ -1,0 +1,14 @@
+diff --git a/DarwinBootPkg/Driver/DarwinBoot.c b/DarwinBootPkg/Driver/DarwinBoot.c
+index 109479e..f045fcb 100644
+--- a/DarwinBootPkg/Driver/DarwinBoot.c
++++ b/DarwinBootPkg/Driver/DarwinBoot.c
+@@ -655,6 +655,9 @@ Fail:
+   if (Map != NULL) { FreePool (Map); }
+   if (Address != 0) { gBS->FreePages (Address, EFI_SIZE_TO_PAGES (WindowSize)); }
+   Print (L"DARWINBOOT: boot refused: %r; firmware retained\n", Status);
++  // negroni (ios-sweet): keep the reason on screen before the menu redraws
++  DEBUG ((DEBUG_ERROR, "\fDARWINBOOT: boot refused: %r\n", Status));
++  gBS->Stall (20 * 1000 * 1000);
+   return Status;
+ }
+ 
