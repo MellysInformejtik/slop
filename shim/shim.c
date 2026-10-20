@@ -53,10 +53,27 @@
 #define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
 #define isb() __asm__ volatile("isb" ::: "memory")
 
-static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
-static inline uint64_t rd64(uintptr_t a) { return *(volatile uint64_t *)a; }
-static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
-static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
+/*
+ * Plain [Xn] addressing only, like Linux readl/writel: Gunyah emulates the
+ * GIC redistributor from the data-abort syndrome, which a load/store with
+ * writeback (e.g. post-indexed str) does not provide -> external abort.
+ */
+static inline uint32_t rd32(uintptr_t a)
+{
+	uint32_t v;
+	__asm__ volatile("ldr %w0, [%1]" : "=r"(v) : "r"(a) : "memory");
+	return v;
+}
+static inline uint64_t rd64(uintptr_t a)
+{
+	uint64_t v;
+	__asm__ volatile("ldr %0, [%1]" : "=r"(v) : "r"(a) : "memory");
+	return v;
+}
+static inline void wr32(uintptr_t a, uint32_t v)
+{
+	__asm__ volatile("str %w0, [%1]" : : "r"(v), "r"(a) : "memory");
+}
 
 extern char secondary_entry[];
 
@@ -134,8 +151,10 @@ static void irq_handler(void)
 		irq_other++;
 	if (id == VTIMER_INTID)
 		wsr("cntv_tval_el0", rsr("cntfrq_el0") / 100);	/* 10 ms */
+#if !defined(BOARD_NEGRONI)
 	else if (id == PTIMER_INTID)
 		wsr("cntp_tval_el0", rsr("cntfrq_el0") / 100);
+#endif
 	wsr("icc_eoir1_el1", iar);
 	isb();
 }
@@ -186,7 +205,8 @@ void secondary_main(uint64_t idx)
 			sec_probe[0] = rd32(r + GICR_IGROUPR0);
 			wr32(r + GICR_IGROUPR0, 0xffffffff);
 			sec_probe[1] = rd32(r + GICR_IGROUPR0);
-			wr8(r + GICR_IPRIORITYR + 19, 0xa0);
+			/* 32-bit only: Gunyah's emulated GICR aborts byte accesses */
+			wr32(r + GICR_IPRIORITYR + 16, 0xa0a0a0a0);
 			sec_probe[2] = rd32(r + GICR_IPRIORITYR + 16);
 		}
 		sec_probe[3] = r ? 1 : 0xdead;
@@ -262,7 +282,11 @@ static void irq_window(const char *label, uintptr_t r, int src)
 	if (src == SGI_INTID)
 		wsr("icc_sgi1r_el1", sgi_self(SGI_INTID));
 	isb();
+#if defined(BOARD_NEGRONI)
+	ist = rsr("cntv_ctl_el0");	/* Gunyah: EL1 CNTP_* is undefined */
+#else
 	ist = src == PTIMER_INTID ? rsr("cntp_ctl_el0") : rsr("cntv_ctl_el0");
+#endif
 	pend = rd32(r + GICR_ISPENDR0);
 	act = rd32(r + GICR_ISACTIVER0);
 	isr = rsr("isr_el1");
@@ -281,7 +305,9 @@ static void irq_window(const char *label, uintptr_t r, int src)
 		}
 	__asm__ volatile("msr daifset, #2" ::: "memory");
 	wsr("cntv_ctl_el0", 0);
+#if !defined(BOARD_NEGRONI)
 	wsr("cntp_ctl_el0", 0);
+#endif
 	isb();
 
 	con_hex2(label, "irqs=", irq_count, "other=", irq_other);
@@ -329,9 +355,13 @@ static void test_gic(void)
 	wr32(r + GICR_IGROUPR0, 0xffffffff);	/* NS view: secure bits are WI */
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
 	uint32_t pri_before = rd32(r + GICR_IPRIORITYR + 16);	/* INTIDs 16..19 */
-	for (int id = 0; id < 32; id++)
-		wr8(r + GICR_IPRIORITYR + id, 0xa0);
+	for (int id = 0; id < 32; id += 4)
+		wr32(r + GICR_IPRIORITYR + id, 0xa0a0a0a0);	/* not wr8: see secondary_main */
+#if defined(BOARD_NEGRONI)
+	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << SGI_INTID));
+#else
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
+#endif
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
 	(void)grp;
 	(void)pri_before;
@@ -433,6 +463,13 @@ void shim_main(uint64_t dtb)
 #if defined(BOARD_NEGRONI)
 	/* Before the payload copy: an external abort there means RAM we may not use. */
 	print_memory(dtb);
+#if defined(PROBE_FIRST)
+	/* SMP and GIC/timer answers on the image that boots, then xnu as usual. */
+	probe_board();
+	con_str("PROBE", "done, xnu in 20s");
+	delay_ms(20000);
+	con_clear(RED);
+#endif
 	stage = "loader";
 #endif
 	con_skip();
