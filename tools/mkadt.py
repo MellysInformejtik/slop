@@ -5,7 +5,7 @@ Only what the early boot path actually reads (see NOTES.md); every sweet MMIO
 address comes from the sweet live FDT.
 
 Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|negroni]
-                 [--dram BASE:SIZE] [--ufs]
+                 [--dram BASE:SIZE] [--ufs] [--darwinboot]
 
 --board negroni: OnePlus 10 Pro 5G (SM8450), addresses from the mainline DT
 (docs/negroni.md). No /sweet-ufs node unless --ufs: the kernel then never
@@ -95,7 +95,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, board='sweet', dram=None, ufs=None):
+def build(seed=None, qemu=False, highmem=False, board='sweet', dram=None, ufs=None, darwinboot=False):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py).
     board='negroni': the OnePlus 10 Pro tree (highmem does not apply; use dram)."""
     neg = board == 'negroni'
@@ -123,6 +123,10 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', dram=None, ufs=No
         ph(),
         ('dram-base', u64(phys_base)),
         ('dram-size', u64(mem_size)),
+    ] + ([
+        # UniXNU DarwinBoot: size of the RAM window it allocates (dram-base must be where it lands)
+        ('darwinboot-memory-size', u64(mem_size)),
+    ] if darwinboot else []) + [
         ('random-seed', seed),
         ('debug-enabled', u32(1)),
         ('firmware-version', cstr('sweet-shim')),
@@ -299,7 +303,8 @@ if __name__ == '__main__':
             raise SystemExit('--dram: base must be 32 MiB aligned, size 16 KiB aligned')
         dram = (base, size)
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
-                 board=_arg('--board') or 'sweet', dram=dram, ufs=True if '--ufs' in sys.argv else None)
+                 board=_arg('--board') or 'sweet', dram=dram, ufs=True if '--ufs' in sys.argv else None,
+                 darwinboot='--darwinboot' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

@@ -9,7 +9,13 @@ F=/mnt/c/Users/paw/scoop/shims/fastboot.exe
 	|| { tail -30 "$mu/../negroni-uefi/build-debug.log"; exit 1; }
 fd=$mu/Build/negroniPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd
 BOARD=negroni DTB=$repo/dtb/negroni/sm8450-oneplus-negroni.dtb "$repo/shim/build.sh" "$fd" > /dev/null
-rd=$(mktemp); cp "$fd" "$rd"; truncate -s 16M "$rd"	# ABL hangs on small ramdisks
+rd=$(mktemp); cp "$fd" "$rd"
+if [ -n "${ESP:-}" ]; then
+	# UniXNU payload FAT volume right after the FV, at the 1 MiB boundary NegroniBootMemoryDxe expects
+	fvlen=$(stat -c %s "$fd"); truncate -s $(( (fvlen + 0xfffff) & ~0xfffff )) "$rd"; cat "$ESP" >> "$rd"
+else
+	truncate -s 16M "$rd"	# ABL hangs on small ramdisks
+fi
 out=$repo/shim/out/negroni-uefi/shim-mu-debug-v4.img
 mkbootimg --kernel "$repo/shim/out/Image" --ramdisk "$rd" --header_version 4 --pagesize 4096 \
 	--os_version 12.0.0 --os_patch_level 2026-03-00 --cmdline bootconfig -o "$out"

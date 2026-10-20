@@ -466,3 +466,9 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - 2026-10-20 Mu negroni DXE gets to USB (photo): PmicDxe/ButtonsDxe/UsbPwrCtrlDxe dropped (SPMI abort), FeatureEnablerDxe dropped (QSEE result -1, Status 7), UsbConfigDxe dropped (it polls the missing UsbPwrCtrl protocol, 0xE). Next: Mu reaches BDS/menu, then add UniXNU (UniXNUDxe/UniXNU.efi + DarwinBoot) per UniXNU board.toml [firmware].
 - 2026-10-20 Mu's own boot image fails even with a 16M ramdisk, WDT off and a sane header: the shim stays as the loader. It now boots a Mu FV silently and immediately (loader_uefi, right after the Gunyah WDT disable). Mu reaches 'no operating system'.
 - 2026-10-20 UniXNU added to Mu negroni, as on uefi-sheng: UniXNU.efi and UniXNUDxe in the FDF, DarwinBoot in DXE.inc, PACKAGES_PATH = ~/ios-work/UniXNU/package and drivers/DarwinBoot (UNIXNU_ROOT). Flashed for the stage-2 test (menu with the built-in config). The user erased userdata: it must be reflashed with the iOS root (UniXNU [userdata] image) later.
+- 2026-10-20 First iOS 16 entry under UniXNU (flashed; result not yet known).
+  - Keys: NegroniKeyInputDxe works (user confirmed). The menu showed only the built-in actions.
+  - Payload: tools/mkdarwinboot.py builds the FAT payload (EFI/UniXNU/unixnu.toml, Payloads/kernel.macho = xnu/out-0086 kernel, kernel.macho.adt). It uses pyfatfs from ~/ios-work/mu-venv; the host has no mkfs.vfat. ADT: `mkadt.py --board negroni --ufs --dram 840000000:C0000000 --darwinboot`.
+  - Mu memory map: "Kernel RAM" region 0x841000000+0x13F000000. DarwinBoot's 2 MiB-aligned window then lands at 0x841004000, which keeps a 32 MiB-aligned VA-PA delta for the 16K kernel.
+  - Build: `ESP=esp.img uefi/negroni/shim-mu.sh`. It appends the FAT after the FV at the 1 MiB boundary, where NegroniBootMemoryDxe skips the FV.
+  - userdata is erased, so the root will not be found until ios16-root.img is reflashed.
