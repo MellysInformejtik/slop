@@ -45,7 +45,7 @@
   INF negroniPkg/Drivers/NegroniBootMemoryDxe/NegroniBootMemoryDxe.inf
   INF negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
   # The XNU loader is part of the firmware volume (as on sheng)
-  INF DarwinBootPkg/Driver/DarwinBoot.inf
+  # (no UniXNU: plain Mu BDS) INF DarwinBootPkg/Driver/DarwinBoot.inf
   INF FatPkg/EnhancedFatDxe/Fat.inf
   INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
 

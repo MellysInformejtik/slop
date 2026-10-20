@@ -61,7 +61,7 @@
   gQcomPkgTokenSpaceGuid.PcdPlatformType|"LA"
 
 [LibraryClasses]
-  UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+  # (no UniXNU: plain Mu BDS) UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
   FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
 
   #
@@ -75,9 +75,9 @@
   ConfigurationMapLib|negroniPkg/Library/ConfigurationMapLib/ConfigurationMapLib.inf
 
 [Components]
-  UniXNUPkg/Application/UniXNU/UniXNU.inf
-  UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
-  DarwinBootPkg/Driver/DarwinBoot.inf
+  # (no UniXNU: plain Mu BDS) UniXNUPkg/Application/UniXNU/UniXNU.inf
+  # (no UniXNU: plain Mu BDS) UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
+  # (no UniXNU: plain Mu BDS) DarwinBootPkg/Driver/DarwinBoot.inf
   negroniPkg/Drivers/NegroniBootMemoryDxe/NegroniBootMemoryDxe.inf
   negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
 

@@ -91,9 +91,8 @@ READ_LOCK_STATUS   = TRUE
   INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf
 
   # UniXNU
-  INF UniXNUPkg/Application/UniXNU/UniXNU.inf
-  INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
-
+  # (no UniXNU: plain Mu BDS) INF UniXNUPkg/Application/UniXNU/UniXNU.inf
+  # (no UniXNU: plain Mu BDS) INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
   # ACPI
   INF MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
   INF MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
