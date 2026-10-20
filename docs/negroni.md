@@ -99,3 +99,40 @@ through to the root mount. Then
    Check the USB30_PRIM GDSC offset against SM8450 GCC.
 5. Display: SweetFramebuffer's fixed 1080x2400 should come from the ADT `sweet-fbcon` node.
 6. UFS root: only after the user decides which partition iOS may use on this phone.
+
+## Option: port to UniXNU instead (plan, 2026-10-20)
+
+UniXNU (`github.com/UniXNU/UniXNU`, BSD-2-Clause-Patent) runs iOS/iPadOS on
+Qualcomm phones through ABL -> Mu-Silicium UEFI -> UniXNU menu -> DarwinBoot -> XNU.
+Its reference device, sheng (Xiaomi Pad 6S Pro, SM8550), reaches SpringBoard
+with native UFS root, display, touch and partial Adreno 740. Read from the
+clones in `~/ios-work/UniXNU` and `~/ios-work/UniXNU-sheng` (not in git).
+
+Observed in sheng's `board.toml`:
+- Target: unchanged iPad7,1 iPadOS 17.7.11 (21H461) IPSW; prelinked from the
+  original kernelcache plus a source-built 4 KiB XNU (`BCM2837` config).
+- UFS root via `NativeUfs`, `native-ufs-root=1`; userdata as a raw image built
+  from the IPSW OS and SystemOS DMGs (`[userdata]` first/last LBA from the GPT).
+- Same splash trick as ours: a `/reserved-memory/splash_region` at
+  `0xb8000000` is added to the DTB so ABL keeps the panel on.
+
+Gap for negroni: **Mu-Silicium has no negroni (or other OnePlus SM8450) port.**
+`Silicon/Qualcomm/WaipioPkg` exists (SM8450 silicon). Its users are e.g. Samsung
+`r0qPkg` (S22). A negroni UEFI needs a new `Platforms/OnePlus/negroniPkg` that
+imports the phone's own UEFI DXE binaries (sheng: `scripts/import-sheng-uefi.py`
+runs uefiextract on the `uefi` partition ELF).
+
+Steps:
+1. Dump `xbl_a`/`uefi_a` (the name is to be checked) and `xbl_config_a` from fastboot or
+   recovery, read-only, into `dtb/negroni/backup/`.
+2. Make `negroniPkg` from `r0qPkg` (WaipioPkg), with negroni's FD base/size, panel
+   1080x2412 GOP on the splash, and the imported DXEs. Goal: `fastboot boot` reaches a UEFI menu.
+3. Create the device repo `UniXNU-negroni` from UniXNU-sheng: `board.toml` (WaipioPkg firmware,
+   the userdata LBAs from the negroni GPT, dram from our `/memory` probe), defconfig,
+   and an ADT script adapted from `tools/mkadt.py --board negroni`.
+4. Stages 3-5 of their bring-up guide (payload, DarwinBoot, kernel entry).
+   Then NativeUfs root. Touch needs a new Synaptics S3908 driver (sheng uses Novatek).
+
+What carries over from ios-sweet: the hardware facts above (GIC, Gunyah watchdog SMC,
+RAM holes, vtimer 27), and the backups and partition flow. What does not: our
+iOS 16.7 iPhone X userland and the 0001-0086 patch stack.
