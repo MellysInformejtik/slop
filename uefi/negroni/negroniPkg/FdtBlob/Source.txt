@@ -1,0 +1,1 @@
+Mainline sm8450-oneplus-negroni.dtb (XEC linux 476a4a8), from ios-sweet dtb/negroni
