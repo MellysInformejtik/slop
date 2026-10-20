@@ -5,7 +5,11 @@
 #include "console.h"
 #include "font.h"
 
+#if defined(BOARD_NEGRONI)
+#define SCALE		2	/* keeps lines left of the cracked panel stripe */
+#else
 #define SCALE		3
+#endif
 #define CH_W		(8 * SCALE)
 #define CH_H		(16 * SCALE)
 #define MARGIN		24

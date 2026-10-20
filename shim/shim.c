@@ -61,6 +61,7 @@ static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 extern char secondary_entry[];
 
 static const char *stage;	/* set at runtime: no absolute pointers in data */
+static uint64_t boot_dtb;	/* for the panic screen's memory ranges */
 static volatile uint64_t sec_mpidr[NR_CPUS];
 static volatile uint64_t sec_probe[4];	/* CPU1 redistributor write test */
 static volatile uint32_t irq_count, irq_other, irq_last;
@@ -161,6 +162,14 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
 	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
+#if defined(BOARD_NEGRONI)
+	{
+		uint64_t base, size;
+		con_skip();
+		for (int i = 0; i < 8 && fdt_memory(boot_dtb, i, &base, &size); i++)
+			con_hex2("MEM", "pfn=", base >> 12, "MiB=", size >> 20);
+	}
+#endif
 	reset(40);
 }
 
@@ -378,13 +387,17 @@ static uint32_t to_us(uint64_t ticks)
  * First boot on a new board: what ABL hands over (RAM ranges), the CPU,
  * PSCI, SMP and GIC answers the sweet port needed, before any xnu payload.
  */
-static void probe_board(uint64_t dtb)
+static void print_memory(uint64_t dtb)
 {
 	uint64_t base, size;
 
 	stage = "memory";
-	for (int i = 0; i < 6 && fdt_memory(dtb, i, &base, &size); i++)
+	for (int i = 0; i < 8 && fdt_memory(dtb, i, &base, &size); i++)
 		con_hex2("MEM", "pfn=", base >> 12, "MiB=", size >> 20);
+}
+
+static void probe_board(void)
+{
 	con_hex2("MIDR", "cpu0=", rsr("midr_el1"), "mpidr=", rsr("mpidr_el1"));
 	con_hex2("CURREL", "el=", rsr("currentel") >> 2, "pfr0=", rsr("id_aa64pfr0_el1"));
 	stage = "psci";
@@ -398,6 +411,7 @@ static void probe_board(uint64_t dtb)
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+	boot_dtb = dtb;
 #if defined(BOARD_NEGRONI)
 	int64_t wdt = smc(GUNYAH_WDT_CONTROL, WDT_CTRL_DISABLE, 0, 0);
 #if defined(PROBE_RESET_NOW)
@@ -416,13 +430,18 @@ void shim_main(uint64_t dtb)
 	/* 0 = disabled; -1 = no Gunyah watchdog call (expect a reset in seconds) */
 	con_hex2("GH WDT", "off=", (uint32_t)wdt, "status=", (uint32_t)smc(GUNYAH_WDT_STATUS, 0, 0, 0));
 #endif
+#if defined(BOARD_NEGRONI)
+	/* Before the payload copy: an external abort there means RAM we may not use. */
+	print_memory(dtb);
+	stage = "loader";
+#endif
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
 
 #if defined(BOARD_NEGRONI)
-	probe_board(dtb);
+	probe_board();
 #endif
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";

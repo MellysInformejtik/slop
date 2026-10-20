@@ -4,6 +4,14 @@
 
 ### >>> UPDATE 2026-10-20: second board, OnePlus 10 Pro 5G "negroni" (SM8450) <<<
 
+**🎉 XNU RUNS ON NEGRONI (2026-10-20 ~17:26 UTC):** kernel 0082 printed its console on the panel ("SWEET GIC: virtual timer INTID 27", "redistributor stride 0x40000"), then panicked "Undefined kernel instruction" pc=_fiq_context_init+0x14 instr d51be228 = MSR CNTP_CTL_EL0: Gunyah traps EL1 physical-timer access. **0083** skips that write (only CNTP access in the kernel; CNTHCTL_EL2 in sweet_secondary_entry still to check for SMP). Pushed for CI.
+How it boots now (all slot A; slot B Android untouched; backups `dtb/negroni/backup/` + SHA256SUMS of vendor_boot_a, boot_a, dtbo_a, vbmeta_a, vbmeta_b):
+- ABL reads the DTB only from vendor_boot. `vendor_boot_a` = header v4 with only the compiled mainline `dtb/negroni/sm8450-oneplus-negroni.dtb` (has `splash_region`, keeps the display on); `vbmeta_a` = flags 2 (256-byte unsigned header); `dtbo_a` erased; active slot a.
+- `boot_a` = header v4 (`mkbootimg --header_version 4 --kernel shim/out/Image --ramdisk PAYLOAD --cmdline bootconfig`), then plain `fastboot reboot` (NOT `fastboot boot`: ABL's fastboot UI is what stays on screen then).
+- ABL /memory: 0x80000000 ~0x6A0 MiB, 0xf1400000 0xEC MiB, 0x800000000 ~0x3A0 MiB, **0x840000000 0x1400 MiB**. 0xea000000 is a hole (external abort FAR 0xeb004000). Kernel RAM: `mkadt.py --board negroni --dram 840000000:100000000`.
+- Shim negroni font SCALE 2 (panel has a cracked vertical stripe ~x=600). Panic screen prints the MEM ranges. imem restart reason is wrong (resets do not land in fastboot).
+- Root image tooling on this PC: IPSW 16.7.16 + OS/SystemOS/AppOS dmgs in `~/ios-work/`, apfs-fuse built in `~/ios-work/tools/apfs-fuse/build`, hfsplus.ko being built from WSL2-Linux-Kernel linux-msft-wsl-6.18.54.1 (WSL kernel has no HFS+), D22AP ADT in research/ipsw-x/d22ap.adt. iOS root on negroni's UFS needs the user's OK to erase userdata (not given).
+
 Port started; plan, hardware map and unknowns in **`docs/negroni.md`**. Nothing has booted on negroni yet.
 - Done (host side, untested on hardware): `shim/board.h` + `BOARD=negroni shim/build.sh` (negroni constants; with no payload it runs a probe: ABL /memory, MIDR/EL, PSCI, SMP, GIC vtimer/SGI, read-only UFS); `tools/mkadt.py --board negroni [--dram B:S] [--ufs]` (sweet ADTs verified byte-identical); kernel patch **0082** (GICR stride from ADT `redistributor-stride`, default 0x20000; NOT CI-built yet).
 - **The shim C was not compiled**: the machine used (WSL, user paw) had no gcc/cross gcc/dtc/mkbootimg/gh. Build it before the first boot.
