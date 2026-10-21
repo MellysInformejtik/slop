@@ -45,7 +45,8 @@ compiled = [relocations.get(vtable + 16 + i * 8) for i in range(190)]
 if not all(compiled) or vtable + 16 + 190 * 8 in relocations or '___cxa_pure_virtual' in compiled:
     raise SystemExit('Concrete block class has missing/additional/pure virtual methods')
 all_names = list(dict.fromkeys(compiled + [r['reference_name'] for r in audit['methods']]))
-demangled = subprocess.check_output(['xcrun', 'c++filt', '-_'], input='\n'.join(all_names) + '\n', text=True)  # negroni: Xcode 16.4 c++filt strips the Mach-O underscore itself.splitlines()
+# negroni: Apple's c++filt strips the Mach-O underscore itself (-_); feed it the names unchanged
+demangled = subprocess.check_output(['xcrun', 'c++filt', '-_'], input='\n'.join(all_names) + '\n', text=True).splitlines()
 readable = dict(zip(all_names, demangled))
 overrides = 0
 
