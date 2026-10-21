@@ -35,6 +35,8 @@ class CommonPlatform ():
         "Platforms/OnePlus",
         "Common/Mu",
         "Common/Mu_OEM_Sample",
+        "Common/Features/mu_feature_dfci",
+        "Common/Features/mu_feature_config",
         "Mu_Basecore",
         "Silicon/Qualcomm",
         "Silicon/Silicium",
