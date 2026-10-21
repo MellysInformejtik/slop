@@ -179,7 +179,8 @@ def build(seed=None, qemu=False, highmem=False, board='negroni', dram=None, ufs=
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr(cpu_compatible) + cstr('ARM,v8')),
+            # NegroniCPU (kernel, inherited from sweet) matches qcom,kryo470.
+            ('compatible', cstr(cpu_compatible) + (cstr('qcom,kryo470') if neg else b'') + cstr('ARM,v8')),
             ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology

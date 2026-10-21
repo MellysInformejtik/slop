@@ -523,3 +523,9 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - 2026-10-21 HarmonyOS NEXT boot 2 (userdata repaired, rw): NEXT ran 77 s, /data populated, nativetoken.json generated (hdf_devmgr token 671286734). Log: ~/hmos-work/logs/boot-0815/boot.log (+ datalog = /data/log). Death: critical service hdf_devmgr exited 4x -> init "ExecReboot panic". Cause chain: SELinux policy never loaded ("Security getenforce failed" -> "load_policy failed": selinuxfs not mounted) -> every process has context "kernel" -> samgr "AddSystemAbilityInner selinux permission denied! callSid:kernel" -> hdf_devmgr cannot register -> exits. /proc/dsmm/developer missing is only a fallback-to-normal-mode notice. Binder token ioctls 31/32 and the 'A' token ioctls match NEXT; "magic fail TYPE=84" is a harmless 'T' (tty) ioctl.
   - Fix flashed: first stage mounts selinuxfs at /sys/fs/selinux (/mnt/c/Users/paw/hmos/native/firststage.c), kernel relinked, boot_a = shim/out/negroni-uefi/shim-mu-hmos-esp.img. Result not yet known.
   - Getting logs: OrangeFox needs stock vendor_boot_a + dtbo_a + vbmeta_a + boot_a (fastboot reboot recovery boots boot_a otherwise); fastboot boot of the OrangeFox image is refused (Bad Buffer Size). adb pull /mnt/hmud/hmos/log/boot.log after mount -o ro /dev/block/sda14. USB ACM (COM3, 1d6b:0104) enumerates but Open fails once the phone panicked.
+
+### 2026-10-21 negroni-ios UniXNU hang located
+- Observed: with `-enable_kprintf_spam io=0xc negronifb_noconsole=0` (kernel 0089), IOKit reaches AppleCLCD; VTIMER IRQs keep running (16384).
+- Patch 0085 thread dump: boot thread blocked in ml_wait_max_cpus <- kperf_init_early <- kernel_bootstrap_thread.
+- Cause: NegroniCPU matches 'qcom,kryo470' but the negroni ADT CPUs were 'qcom,kryo780' only, so ml_set_max_cpus never ran.
+- Fix: mkadt.py adds 'qcom,kryo470' as a second CPU compatible. boot_a rebuilt (~/ios-work/negroni-ios-out/unixnu/boot_a.img); not yet booted.
