@@ -487,3 +487,6 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   - Stage 2: NativeUfs (unverified), NativeRamBlock bindings, legacy display (inactive GPU/boot-progress refs stubbed), sheng PMGR nub, no panic-screen patch, no owner-root chain.
   - Decrypted outputs: ~/ios-work/unixnu-out (payload repacked to 76 MiB as payload-small.img so the boot image fits boot_a).
   - Boot image: shim/out/negroni-uefi/shim-mu-unixnu17-v4.img. Flashed together with userdata-root.simg (WinPE gone).
+- 2026-10-21 iOS 17 (UniXNU) still hangs right after the green bar, with the ADT DRAM range at 0x840000000+5 GiB and Mu mapping the whole bank (MemoryMapLib "Kernel RAM" 0x840000000+0x140000000). User: iOS 17 base stays (an iPhone X/iOS 16 base cannot work with UniXNU's 10063 kernel).
+  - NativeUfs ported to SM8450 (unixnu-negroni/scripts/patch-native-ufs.py, applied by CI): compatible qcom,sm8450-ufshc (the ADT name; before, the driver never matched), UFS SMMU stream 0xe0, GCC UFS branches 0x87xxx (Linux gcc-sm8450.c). UniXNU pinned to fb2bb31 (upstream b6ae99c broke the bootstrap patch).
+  - CI 39603991683 green (repo MellysInformejtik/slop), kernel sha 17a127eb…; payload-small.img rebuilt (ADT d5000f5a…), boot_a flashed. Result not yet known.
