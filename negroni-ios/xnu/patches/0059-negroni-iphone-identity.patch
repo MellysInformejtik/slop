@@ -42,7 +42,7 @@
 -	if (name == NULL || maxLength <= 0) {
 -		return false;
 -	}
--	strlcpy(name, "Redmi Note 10 Pro", (size_t)maxLength);
+-	strlcpy(name, "OnePlus 10 Pro 5G", (size_t)maxLength);
 -	return true;
 -}
 +/*

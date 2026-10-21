@@ -220,7 +220,7 @@ index 0000000..a044ad0
 +++ b/pexpert/pexpert/arm64/NEGRONI.h
 @@ -0,0 +1,75 @@
 +/*
-+ * Board config for the Redmi Note 10 Pro ("negroni", Qualcomm SM7150 /
++ * Board config for the OnePlus 10 Pro 5G ("negroni", Qualcomm SM7150 /
 + * Snapdragon 732G): Kryo 470 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
 + *
 + * Generic ARM like BCM2837 (no APPLE_ARM64_ARCH_FAMILY: none of Apple's

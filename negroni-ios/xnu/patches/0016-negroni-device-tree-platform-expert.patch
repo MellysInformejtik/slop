@@ -9,7 +9,7 @@ diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 +    "   {"
 +    "     'IOClass'         = NegroniPlatformExpert;"
 +    "     'IOProviderClass' = IOPlatformExpertDevice;"
-+    "     'IONameMatch'     = 'xiaomi,negroni';"
++    "     'IONameMatch'     = 'oneplus,negroni';"
 +    "     'IOProbeScore'    = 10000:32;"
 +    "   },"
 +#endif
@@ -32,7 +32,7 @@ new file mode 100644
 +++ b/iokit/Kernel/arm/NegroniPlatformExpert.cpp
 @@ -0,0 +1,86 @@
 +/*
-+ * Minimal device-tree platform expert for Redmi Note 10 Pro (negroni).
++ * Minimal device-tree platform expert for OnePlus 10 Pro 5G (negroni).
 + * Uses XNU's normal platform, power-domain and nub initialization. Hardware
 + * interrupt and power-management services are supplied by separate drivers.
 + */
@@ -113,7 +113,7 @@ new file mode 100644
 +	if (name == NULL || maxLength <= 0) {
 +		return false;
 +	}
-+	strlcpy(name, "Redmi Note 10 Pro", (size_t)maxLength);
++	strlcpy(name, "OnePlus 10 Pro 5G", (size_t)maxLength);
 +	return true;
 +}
 +#endif /* NEGRONI */

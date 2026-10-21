@@ -147,7 +147,7 @@ index 0000000..8f4c808
 +++ b/osfmk/arm64/negroni_early.c
 @@ -0,0 +1,130 @@
 +/*
-+ * Redmi Note 10 Pro bootstrap console. No allocation, locks, ADT parsing or
++ * OnePlus 10 Pro 5G bootstrap console. No allocation, locks, ADT parsing or
 + * per-CPU state: panic() can reach this before a current thread exists.
 + * start.s maps the splash framebuffer VA=PA as Normal Non-Cacheable memory.
 + * Stop using that mapping before arm_vm_init tears down bootstrap TTBR0.

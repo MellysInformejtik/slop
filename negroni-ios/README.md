@@ -18,3 +18,14 @@ Plan:
    framebuffer from Mu's GOP, timer/GIC, PSCI SMP; drop the SM7150 GENI touch.
 3. EFI loader started by Mu (kernel + ADT on the boot FAT volume), ADT for negroni.
 4. iOS 16 root (iPhone X 20H392) on userdata.
+
+## Boot chain
+
+ABL -> boot shim -> Mu-Silicium (negroniPkg) -> `\EFI\BOOT\BOOTAA64.EFI` on the boot FAT volume =
+`loader/NegroniXnuBoot` (built in the Mu tree as negroniPkg/Applications/NegroniXnuBoot) -> reads
+`\negroni\payload.bin` (tools/mkpayload.py: kernel + ADT + cmdline, magic `NEGRONIX`), checks that the
+kernel window is plain RAM, ExitBootServices, copies kernel/ADT/boot_args (framebuffer from GOP), MMU off,
+jumps with x0 = boot_args.
+
+ADT: `tools/mkadt.py OUT --board negroni --ufs --dram BASE:SIZE` (iPhone X /product from the D22AP tree in
+research/ipsw-x, not in git).
