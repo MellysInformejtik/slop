@@ -255,6 +255,20 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func','--globalize-
 require(code((gop/'NativeGOPPresenter.o').read_bytes(),macho((gop/'NativeGOPPresenter.o').read_bytes()))==
         code(gop_late.read_bytes(),macho(gop_late.read_bytes())),'Owned presenter instructions unchanged by late init staging')
 run(['xcrun','ar','rcs',archive,gop_late])
+# negroni: sheng's GpuPowerProbe/LegacyDisplayProbe call into the Adreno 740 stack (NativeAdreno, AdrenoPM4, ShengGmu),
+# which is not built for SM8450. That code only runs with the sheng-gpu-* boot args negroni does not set, so every
+# Adreno/GMU symbol the archive still needs is bound to a stub returning 0.
+import re as _re
+_undef = set(run(['xcrun','nm','-u','-j',archive],text=True).split())
+_defined = set(run(['xcrun','nm','-U','-j','-g',archive],text=True).split())
+_gpu = sorted(n for n in _undef - _defined if _re.search(r'Adreno|ShengGmu|AdrenoHfi|AdrenoPM4', n))
+if _gpu:
+    _stub_s = OUT/'negroni-gpu-stubs.s'
+    _stub_s.write_text('.text\n' + ''.join(f'.globl "{n}"\n.p2align 2\n"{n}":\n  mov x0, #0\n  ret\n' for n in _gpu))
+    _stub_o = OUT/'negroni-gpu-stubs.o'
+    run(['xcrun','--sdk','iphoneos','clang','-target','arm64-apple-ios17.0','-c',_stub_s,'-o',_stub_o])
+    run(['xcrun','ar','rcs',archive,_stub_o])
+    print(f'negroni: {len(_gpu)} Adreno/GMU symbols stubbed')
 sources.extend([ROOT/'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp',ROOT/'drivers/NativeMobileDisplay/NativeGOPWire.h'])
 (OUT/'build-report.json').write_text(json.dumps(dict(
     source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources},generated_abi_sha256=sha(OUT/'OriginalLegacyFramebufferABI.h'),
