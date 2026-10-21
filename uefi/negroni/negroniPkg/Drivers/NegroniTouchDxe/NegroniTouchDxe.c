@@ -355,7 +355,8 @@ Probe (
         return;
       }
 
-      PatchI2cConfig ();
+      // PatchI2cConfig () adds SE4 to I2CDxe's list, but I2CDxe then touches SE4's DMA block (0x991000):
+      // synchronous external abort, the SE is partly locked to the secure side (trusted touch). Not used.
       // find the instance that is QUP0 SE4: the one where the S3908 answers
       for (UINT32 Inst = 1; Inst <= 24 && mQcomHandle == NULL; Inst++) {
         VOID        *H = NULL;
