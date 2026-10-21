@@ -65,6 +65,8 @@ jobs:
         run: |
           git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/UniXNU/UniXNU.git "$RUNNER_TEMP/UniXNU"
           git -C "$RUNNER_TEMP/UniXNU" log -1 --format='UniXNU %H %cd'
+          # NativeUfs is written for sheng (SM8550): SM8450 compatible, GCC branches and UFS stream ID
+          python3 "$GITHUB_WORKSPACE/unixnu-negroni/scripts/patch-native-ufs.py" "$RUNNER_TEMP/UniXNU/drivers/NativeUfs"
           # Fresh-tree bootstrap pass: build-xnu-4k-baseline.sh tests for archives (corecrypto, drivers) that only
           # the later archive step builds, so the pass exits before compiling and leaves no compile records.
           # For that pass only, turn every enabled XNU_* feature off: plain XNU compiles and leaves the records.

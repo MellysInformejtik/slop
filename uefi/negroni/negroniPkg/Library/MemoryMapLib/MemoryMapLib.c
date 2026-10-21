@@ -35,9 +35,8 @@ gMemoryDescriptor[] = {
   {"TAGS",              0xE8900000, 0x01200000, AddMem, MEM_RES, UNCACHEABLE, Reserv, UNCACHED_UNBUFFERED_XN},
   {"QTEE",              0xE9B00000, 0x00500000, AddMem, MEM_RES, UNCACHEABLE, Reserv, UNCACHED_UNBUFFERED_XN},
   {"TZApps Reserved",   0xEA000000, 0x07400000, AddMem, MEM_RES, UNCACHEABLE, Reserv, UNCACHED_UNBUFFERED_XN},
-  // negroni ABL /memory bank 0x840000000 + 5 GiB. Starts 16 MiB in, so that DarwinBoot's 2 MiB-aligned window puts
-  // the 16K-page ios-sweet kernel at a 32 MiB-aligned VA-PA delta (VA 0x...7004000 -> PA 0x841004000).
-  {"Kernel RAM",        0x841000000,0x13F000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN},
+  // negroni ABL /memory bank 0x840000000 + 5 GiB, whole: DarwinBoot's 4K UniXNU window starts in it (0x84007C000)
+  {"Kernel RAM",        0x840000000,0x140000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN},
   {"HYP Reserved",      0x830000000,0x10000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
 
   // Other Memory Regions
