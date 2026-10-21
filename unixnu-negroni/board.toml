@@ -132,7 +132,7 @@ volume = "NEGRONIESP"
 size_mib = 192
 loader = "firmware"
 title = "negroni: source 4K XNU (UniXNU) to console"
-dram_size = "0x1f3b00000"            # ABL /memory banks on negroni: 0x6A0+0xEC+0x3AF+0x1400 MiB
+dram_size = "0x140000000"            # the 0x840000000 bank (5 GiB) holding the DarwinBoot window
 skip_setup_tool = "scripts/seed-data-skip-setup.py"   # used by --skip-setup
 panic_screen = false                 # negroni: the entry-probe patch targets sheng's kernel padding layout
 # The original static/System trust caches, and the owner trust bundle built around them.

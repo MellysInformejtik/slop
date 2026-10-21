@@ -29,7 +29,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 
-DRAM_BASE = 0x80000000
+DRAM_BASE = 0x840000000      # negroni: DarwinBoot's window is in the 0x840000000 bank (Mu "Kernel RAM")
 ARMIO_BASE = 0x17000000          # APSS peripheral block containing the GIC
 GIC_DIST = 0x17100000
 GIC_DIST_SIZE = 0x10000
