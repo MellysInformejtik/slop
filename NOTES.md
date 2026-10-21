@@ -482,3 +482,8 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   - CI: `.github/workflows/unixnu-negroni.yml` on macos-15. Secrets UNIQUE_CHIP_ID (the platform seed) and ARTIFACT_KEY (output encryption; the repo is public) are set; their local copies are in ~/ios-work/unixnu-secrets (not git).
   - Windows status at this point: WinPE boots; NegroniTouch.sys is built and injected, but the I2C read fails (NTOUCH read -1), most likely the touch supplies L3C/L6C (RPMh) being off.
 - 2026-10-21 unixnu-negroni CI (run 39525905797): stage 1 now reaches the real kernel link (NativeUfs compiles unverified). Last failure: link, see the 'Undefined symbols' in that run. The owner-root chain, VirtIO/RAM block and boot progress are off. The userdata image is ready (~/ios-work/ipsw/21H461/userdata-root.simg, built by tools/mkunixnu-userdata.py). Mu has UniXNU/DarwinBoot re-enabled.
+- 2026-10-21 **unixnu-negroni CI green** (run 39543905372): 4K XNU (xnu-10063.141.1 + UniXNU patches) prelinked against the iPad7,1 17.7.11 kernelcache (payload kernel sha256 96d2982f...).
+  - Ladder: stage 1 candidate -> storage audit (static: the QEMU/HVF observation is skipped) -> stage 2.
+  - Stage 2: NativeUfs (unverified), NativeRamBlock bindings, legacy display (inactive GPU/boot-progress refs stubbed), sheng PMGR nub, no panic-screen patch, no owner-root chain.
+  - Decrypted outputs: ~/ios-work/unixnu-out (payload repacked to 76 MiB as payload-small.img so the boot image fits boot_a).
+  - Boot image: shim/out/negroni-uefi/shim-mu-unixnu17-v4.img. Flashed together with userdata-root.simg (WinPE gone).
