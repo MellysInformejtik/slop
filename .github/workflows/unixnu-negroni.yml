@@ -116,6 +116,10 @@ jobs:
           mkdir -p "$T/build/native-prelink"
           cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-apfs-load-positive.macho"
           cp out/negroni/kernel/kernel.json "$T/build/native-prelink/native-apfs-load-positive.json"
+          # Xcode 16.4 clang: tolerate the newer-clang warning flag in UniXNU's audit scripts too
+          for f in "$T"/scripts/audit-*.py; do
+            sed -i '' "s/'-Wno-unnecessary-virtual-specifier'/'-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier'/g" "$f"
+          done
           (cd "$T" && python3 scripts/audit-storage-interface.py)
           ls -la "$T/build/storage-abi/interface-audit.json"
           # Legacy display audit: same candidate (it carries the unchanged original IOMobileGraphicsFamily, checked by
