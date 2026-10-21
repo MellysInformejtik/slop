@@ -14,6 +14,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
+#include <Library/FdtLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiBootManagerLib.h>
@@ -94,6 +95,91 @@ STATIC int QcomXfer (VOID *Handle, uint8_t *Buf, uint32_t Len, UINT32 Flags, I2C
   }
 
   return QcomStatus (St);
+}
+
+/*
+ * Qualcomm I2CDxe takes its bus list from the XBL config tree (xbl_config, copied to RAM, "DT BLOB"
+ * 0x80600000): /soc/i2c/i2c_device_config_<core_index>. negroni's firmware lists only instances 1 and 6;
+ * add 5 = QUP0 SE4 (the touch bus), modelled on instance 6 (SE5): core 0x900000 + 0x90000, GPI index 4,
+ * SDA gpio16 / SCL gpio17 function 1 (encoding 0x18000 | gpio << 4 | func), polled, wrap0 clocks.
+ * Only the RAM copy changes; xbl_config on flash is untouched.
+ */
+#define DT_BLOB_BASE  0x80600000UL
+#define DT_BLOB_SIZE  0x00040000UL
+
+STATIC UINT32 Be32 (UINT32 V) { return SwapBytes32 (V); }
+
+STATIC
+VOID
+PatchI2cConfig (
+  VOID
+  )
+{
+  for (UINTN Off = 0; Off + 0x40 < DT_BLOB_SIZE; Off += 8) {
+    VOID    *Fdt = (VOID *)(DT_BLOB_BASE + Off);
+    INT32   Node;
+    UINT32  Size;
+
+    if ((*(UINT32 *)Fdt != 0xEDFE0DD0) || (FdtCheckHeader (Fdt) != 0)) {
+      continue;
+    }
+
+    Size = Be32 (((UINT32 *)Fdt)[1]);
+    Node = FdtPathOffset (Fdt, "/soc/i2c");
+    Log ("XBL config tree at 0x%lx (%u bytes): %a\n", (UINT64)(UINTN)Fdt, Size, Node >= 0 ? "has /soc/i2c" : "no /soc/i2c");
+    if (Node < 0) {
+      Off += (Size & ~7u);
+      continue;
+    }
+
+    if (FdtSubnodeOffset (Fdt, Node, "i2c_device_config_5") >= 0) {
+      Log ("  i2c_device_config_5: already present\n");
+      return;
+    }
+
+    if (Off + Size + 4096 > DT_BLOB_SIZE) {
+      Log ("  i2c_device_config_5: NO ROOM to grow the tree\n");
+      return;
+    }
+
+    if (FdtOpenInto (Fdt, Fdt, Size + 4096) != 0) {
+      Log ("  i2c_device_config_5: FdtOpenInto FAILED\n");
+      return;
+    }
+
+    Node = FdtPathOffset (Fdt, "/soc/i2c");
+    Node = FdtAddSubnode (Fdt, Node, "i2c_device_config_5");
+    if (Node < 0) {
+      Log ("  i2c_device_config_5: add FAILED [%d]\n", Node);
+      return;
+    }
+
+    STATIC CONST struct { CONST CHAR8 *Name; UINT32 Val; } U32[] = {
+      { "core_base_addr", 0x900000 }, { "common_base_addr", 0x9c0000 }, { "core_offset", 0x90000 },
+      { "core_irq", 0 }, { "polled_mode", 1 }, { "min_data_length_for_dma", 0 },
+      { "scl_encoding", 0x18111 }, { "sda_encoding", 0x18101 }, { "tcsr_reg_offset", 0 },
+      { "tcsr_base_addr", 0x1fc0000 }, { "tcsr_reg_value", 0 }, { "common_clocks", 1 },
+    };
+    STATIC CONST struct { CONST CHAR8 *Name; UINT8 Val; } U8[] = {
+      { "qupv3_instance", 0 }, { "core_index", 5 }, { "se_index", 4 }, { "gpi_index", 4 },
+    };
+    INT32  Err = 0;
+
+    for (UINTN i = 0; i < ARRAY_SIZE (U8); i++) {
+      Err |= FdtSetProp (Fdt, Node, U8[i].Name, &U8[i].Val, 1);
+    }
+
+    for (UINTN i = 0; i < ARRAY_SIZE (U32); i++) {
+      UINT32  V = Be32 (U32[i].Val);
+      Err |= FdtSetProp (Fdt, Node, U32[i].Name, &V, 4);
+    }
+
+    Err |= FdtSetProp (Fdt, Node, "se_clock", "gcc_qupv3_wrap0_s4_clk", sizeof ("gcc_qupv3_wrap0_s4_clk"));
+    Log ("  i2c_device_config_5 (QUP0 SE4) added: %a\n", Err == 0 ? "OK" : "FAILED");
+    return;
+  }
+
+  Log ("XBL config tree: NOT FOUND in DT BLOB\n");
 }
 
 STATIC int I2cRead (void *Ctx, uint8_t *Buf, uint32_t Len)
@@ -269,6 +355,7 @@ Probe (
         return;
       }
 
+      PatchI2cConfig ();
       // find the instance that is QUP0 SE4: the one where the S3908 answers
       for (UINT32 Inst = 1; Inst <= 24 && mQcomHandle == NULL; Inst++) {
         VOID        *H = NULL;
