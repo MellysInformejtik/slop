@@ -20,6 +20,7 @@
 #define TCM_PADDING			0x5A
 #define TCM_STATUS_IDLE			0x00
 #define TCM_STATUS_OK			0x01
+#define TCM_STATUS_BUSY			0x02
 #define TCM_STATUS_CONTINUED_READ	0x03
 #define TCM_REPORT_IDENTIFY		0x10
 #define TCM_REPORT_TOUCH		0x11
@@ -67,6 +68,8 @@ struct tcm {
 	uint8_t payload[TCM_MAX_PAYLOAD];
 	uint32_t payload_len;
 	uint8_t code;
+	uint8_t header[4];	/* last wire header, for diagnostics */
+	int transport_error;	/* preserve the bus driver's failure code */
 	struct tcm_object obj[TCM_MAX_OBJECTS];
 };
 
@@ -76,22 +79,33 @@ struct tcm {
  */
 static inline int tcm_read_message(struct tcm *t)
 {
-	uint8_t hdr[4];
-	static uint8_t buf[TCM_MAX_PAYLOAD + 3];
+	uint8_t *hdr = t->header;
+	uint8_t buf[TCM_MAX_PAYLOAD + 3];
 	uint32_t len;
 
-	if (t->io.read(t->io.ctx, hdr, 4))
+	t->code = 0;
+	t->payload_len = 0;
+	for (uint32_t i = 0; i < 4; i++)
+		hdr[i] = 0;
+	t->transport_error = t->io.read(t->io.ctx, hdr, 4);
+	if (t->transport_error)
 		return -1;
 	if (hdr[0] != TCM_MARKER)
 		return 1;
 	t->code = hdr[1];
+	/* Idle/busy have no payload, even if their length bytes contain filler. */
+	if (t->code == TCM_STATUS_IDLE || t->code == TCM_STATUS_BUSY)
+		return 1;
+	if (t->code == TCM_STATUS_CONTINUED_READ)
+		return -3;	/* a previous reader consumed the message header */
 	len = hdr[2] | ((uint32_t)hdr[3] << 8);
 	t->payload_len = 0;
 	if (!len)
 		return 0;
 	if (len > TCM_MAX_PAYLOAD)
 		return -2;
-	if (t->io.read(t->io.ctx, buf, len + 3))
+	t->transport_error = t->io.read(t->io.ctx, buf, len + 3);
+	if (t->transport_error)
 		return -1;
 	if (buf[0] != TCM_MARKER || buf[1] != TCM_STATUS_CONTINUED_READ || buf[len + 2] != TCM_PADDING)
 		return -3;
@@ -112,7 +126,8 @@ static inline int tcm_write_command(struct tcm *t, uint8_t cmd, const uint8_t *p
 	buf[2] = (uint8_t)(len >> 8);
 	for (uint32_t i = 0; i < len; i++)
 		buf[3 + i] = payload[i];
-	return t->io.write(t->io.ctx, buf, 3 + len) ? -1 : 0;
+	t->transport_error = t->io.write(t->io.ctx, buf, 3 + len);
+	return t->transport_error ? -1 : 0;
 }
 
 /*
@@ -129,7 +144,7 @@ static inline int tcm_command(struct tcm *t, uint8_t cmd, const uint8_t *payload
 
 		if (rc < 0)
 			return rc;
-		if (rc == 0 && t->code != TCM_REPORT_TOUCH && t->code != TCM_REPORT_IDENTIFY)
+		if (rc == 0 && t->code < TCM_REPORT_IDENTIFY)
 			return t->code == TCM_STATUS_OK ? 0 : -4;
 		wait();
 	}

@@ -87,6 +87,7 @@ typedef struct {
 	volatile UCHAR *GpioPage;	/* GPIO21 control page; io register at +4 */
 	SIZE_T SeLength, GpioLength;
 	BOOLEAN Ready;
+	volatile LONG Polling;
 	ULONG Down;			/* contact bitmap reported down last frame */
 } NT_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(NT_CONTEXT, NtGetContext)
@@ -141,8 +142,9 @@ NTSTATUS NtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 		return status;
 	ctx = NtGetContext(device);
 
-	/* Passive-level periodic poll: the GENI transfers spin on status registers */
-	WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig, NtPoll, POLL_MS);
+	/* KMDF passive timers must be one-shot; NtPoll rearms while in D0. */
+	WDF_TIMER_CONFIG_INIT(&timerConfig, NtPoll);
+	timerConfig.AutomaticSerialization = FALSE;
 	WDF_OBJECT_ATTRIBUTES_INIT(&attr);
 	attr.ParentObject = device;
 	attr.ExecutionLevel = WdfExecutionLevelPassive;
@@ -190,8 +192,10 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 
 	ctx->I2c.base = ctx->Se;
 	ctx->I2c.polls = 200000;
-	if (geni_i2c_init(&ctx->I2c) != GENI_I2C_OK) {
-		KdPrint(("NegroniTouch: SE4 is not in I2C mode (proto %u)\n", geni_i2c_proto(&ctx->I2c)));
+	int initRc = geni_i2c_init(&ctx->I2c);
+	if (initRc != GENI_I2C_OK) {
+		KdPrint(("NegroniTouch: SE4 init %d proto %u IF_DISABLE 0x%x; -5 requires GPI DMA\n",
+			initRc, geni_i2c_proto(&ctx->I2c), geni_rd(&ctx->I2c, GENI_IF_DISABLE_RO)));
 		return STATUS_DEVICE_CONFIGURATION_ERROR;
 	}
 	ctx->Tcm.io.ctx = &ctx->I2c;
@@ -200,8 +204,11 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 	/* drain what is pending (the IDENTIFY report of the reset done by UEFI), then fetch the report layout */
 	for (int i = 0; i < 16 && tcm_read_message(&ctx->Tcm) == 0; i++)
 		;
-	if (tcm_get_report_config(&ctx->Tcm, NtWait1ms) != 0) {
-		KdPrint(("NegroniTouch: no touch report config from the S3908\n"));
+	int configRc = tcm_get_report_config(&ctx->Tcm, NtWait1ms);
+	if (configRc != 0) {
+		KdPrint(("NegroniTouch: config rc %d bus %d header %02x %02x %02x %02x\n",
+			configRc, ctx->Tcm.transport_error, ctx->Tcm.header[0], ctx->Tcm.header[1],
+			ctx->Tcm.header[2], ctx->Tcm.header[3]));
 		return STATUS_DEVICE_NOT_READY;
 	}
 	ctx->Ready = TRUE;
@@ -225,6 +232,7 @@ NTSTATUS NtReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
 NTSTATUS NtD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Previous)
 {
 	UNREFERENCED_PARAMETER(Previous);
+	InterlockedExchange(&NtGetContext(Device)->Polling, 1);
 	WdfTimerStart(NtGetContext(Device)->Timer, WDF_REL_TIMEOUT_IN_MS(POLL_MS));
 	return STATUS_SUCCESS;
 }
@@ -232,6 +240,7 @@ NTSTATUS NtD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Previous)
 NTSTATUS NtD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Target)
 {
 	UNREFERENCED_PARAMETER(Target);
+	InterlockedExchange(&NtGetContext(Device)->Polling, 0);
 	WdfTimerStop(NtGetContext(Device)->Timer, TRUE);
 	return STATUS_SUCCESS;
 }
@@ -273,7 +282,7 @@ void NtPoll(WDFTIMER Timer)
 {
 	NT_CONTEXT *ctx = NtGetContext(WdfTimerGetParentObject(Timer));
 
-	if (!ctx->Ready)
+	if (!ctx->Ready || !InterlockedCompareExchange(&ctx->Polling, 0, 0))
 		return;
 	for (int i = 0; i < 4 && NtAttention(ctx); i++) {	/* a few queued reports per tick at most */
 		if (tcm_read_message(&ctx->Tcm) != 0)
@@ -281,6 +290,8 @@ void NtPoll(WDFTIMER Timer)
 		if (ctx->Tcm.code == TCM_REPORT_TOUCH && tcm_parse_touch(&ctx->Tcm) == 0)
 			NtSubmit(ctx);
 	}
+	if (InterlockedCompareExchange(&ctx->Polling, 0, 0))
+		WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(POLL_MS));
 }
 
 void NtGetFeature(PVOID Context, VHFOPERATIONHANDLE Op, PVOID OpContext, PHID_XFER_PACKET Packet)

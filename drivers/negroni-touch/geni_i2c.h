@@ -87,6 +87,7 @@ enum geni_i2c_status {
 	GENI_I2C_NACK = -2,
 	GENI_I2C_BUS_ERR = -3,
 	GENI_I2C_TIMEOUT = -4,
+	GENI_I2C_FIFO_DISABLED = -5,	/* requires a GPI DMA transport */
 };
 
 struct geni_i2c {
@@ -135,6 +136,9 @@ static inline int geni_i2c_init(struct geni_i2c *g)
 		g->polls = 2000000;
 	if (geni_i2c_proto(g) != GENI_SE_I2C)
 		return GENI_I2C_NOT_I2C;
+	/* Do not change DMA mode or submit FIFO commands on a GPI-only engine. */
+	if (geni_rd(g, GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE)
+		return GENI_I2C_FIFO_DISABLED;
 	geni_wr(g, SE_GENI_M_IRQ_CLEAR, 0xffffffffu);
 	geni_wr(g, SE_GENI_S_IRQ_CLEAR, 0xffffffffu);
 	geni_wr(g, SE_GENI_M_IRQ_EN, geni_rd(g, SE_GENI_M_IRQ_EN) | M_CMD_DONE_EN |

@@ -94,7 +94,15 @@ STATIC int QcomXfer (VOID *Handle, uint8_t *Buf, uint32_t Len, UINT32 Flags, I2C
     *Raw = St;
   }
 
+  if ((St == I2C_SUCCESS) && (Done != Len)) {
+    return GENI_I2C_BUS_ERR;
+  }
   return QcomStatus (St);
+}
+
+STATIC int QcomRead (void *Ctx, uint8_t *Buf, uint32_t Len)
+{
+  return QcomXfer (Ctx, Buf, Len, I2C_READ_TRANSFER, NULL);
 }
 
 /*
@@ -315,6 +323,8 @@ Probe (
 
   mLogLen = 0;
   mLog[0] = 0;
+  ZeroMem (&mTcm, sizeof (mTcm));
+  Log ("Touch probe v2: framed reads, transport diagnostics\n");
 
   EnableClocks ();
   // power: 1.8 V (L6C + load switch), then 2.8 V (L3C); reset held low throughout
@@ -342,7 +352,7 @@ Probe (
   Rc = geni_i2c_init (&mI2c);
   Log ("SE4 proto %u fifo %u init %d fw 0x%x clk_cfg 0x%x ios 0x%x (bit0 sda bit1 scl)\n", geni_i2c_proto (&mI2c), mI2c.tx_depth, Rc,
        geni_rd (&mI2c, GENI_FW_REVISION_RO), geni_rd (&mI2c, GENI_SER_M_CLK_CFG), geni_rd (&mI2c, SE_GENI_IOS));
-  if (Rc != GENI_I2C_OK) {
+  if ((Rc != GENI_I2C_OK) && (Rc != GENI_I2C_FIFO_DISABLED)) {
     return;
   }
 
@@ -361,8 +371,9 @@ Probe (
       // find the instance that is QUP0 SE4: the one where the S3908 answers
       for (UINT32 Inst = 1; Inst <= 24 && mQcomHandle == NULL; Inst++) {
         VOID        *H = NULL;
-        uint8_t     B[4];
+        struct tcm  Candidate = { 0 };
         I2C_STATUS  St;
+        int         ReadRc;
 
         DEBUG ((DEBUG_ERROR, "NTOUCH: trying I2C instance %u\n", Inst));   // a hang shows which one
         St = mQcomI2c->Open (Inst, &H);
@@ -371,15 +382,19 @@ Probe (
           continue;
         }
 
-        if (QcomXfer (H, B, sizeof (B), I2C_READ_TRANSFER, &St) == GENI_I2C_OK) {
+        Candidate.io.ctx = H;
+        Candidate.io.read = QcomRead;
+        ReadRc = tcm_read_message (&Candidate);
+        if ((ReadRc >= 0) && (Candidate.header[0] == TCM_MARKER)) {
           mQcomHandle   = H;
           mQcomInstance = Inst;
         } else {
           mQcomI2c->Close (H);
         }
 
-        Log ("  I2C instance %u: %a [%d]\n", Inst, St == I2C_SUCCESS ? "touch chip answers (OK)" :
-             (St == I2C_ERROR_ADDR_NACK) ? "no chip at 0x4b" : "error", St);
+        Log ("  I2C instance %u: frame rc %d bus %d hdr %02x %02x %02x %02x\n", Inst,
+             ReadRc, Candidate.transport_error, Candidate.header[0], Candidate.header[1],
+             Candidate.header[2], Candidate.header[3]);
       }
 
       Log ("Qualcomm I2C: %a instance %u\n", mQcomHandle ? "using (OK)" : "NO INSTANCE REACHES THE CHIP", mQcomInstance);
@@ -387,14 +402,6 @@ Probe (
         return;
       }
     }
-  }
-
-  {
-    uint8_t  Raw[4] = { 0 };
-    int      R      = I2cRead (&mI2c, Raw, 4);
-
-    Log ("Touch chip: %a [%d] data %02x %02x %02x %02x\n", I2cText (R), R, Raw[0], Raw[1], Raw[2], Raw[3]);
-    Log ("geni status 0x%x m_irq 0x%x ios 0x%x\n", geni_rd (&mI2c, SE_GENI_STATUS), geni_rd (&mI2c, SE_GENI_M_IRQ_STATUS), geni_rd (&mI2c, SE_GENI_IOS));
   }
 
   mTcm.io.ctx   = &mI2c;
@@ -413,12 +420,16 @@ Probe (
 
   Log ("TouchComm message: %a [%d code 0x%x len %u]\n", Rc == 0 ? "received (OK)" : Rc > 0 ? "none waiting" : "FAILED (no 0xA5 marker / bus error)",
        Rc, mTcm.code, mTcm.payload_len);
+  Log ("wire hdr %02x %02x %02x %02x bus %d (%a)\n", mTcm.header[0], mTcm.header[1],
+       mTcm.header[2], mTcm.header[3], mTcm.transport_error, I2cText (mTcm.transport_error));
   if ((Rc == 0) && (mTcm.code == TCM_REPORT_IDENTIFY) && (mTcm.payload_len >= 2)) {
     Log ("identify version %u mode %u\n", mTcm.payload[0], mTcm.payload[1]);
   }
 
   Rc = tcm_get_report_config (&mTcm, Wait1ms);
   Log ("Touch report config: %a [%d, %u bytes]\n", Rc == 0 ? "OK" : "FAILED", Rc, mTcm.config_len);
+  Log ("config bus %d hdr %02x %02x %02x %02x\n", mTcm.transport_error,
+       mTcm.header[0], mTcm.header[1], mTcm.header[2], mTcm.header[3]);
   Log ("Interrupt line: %a\n", tlmm_in (Tlmm, NT_PIN_IRQ) ? "idle (high)" : "message waiting (low)");
 
 }
