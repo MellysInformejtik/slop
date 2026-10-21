@@ -1,0 +1,89 @@
+# OnePlus 10 Pro 5G (negroni, SM8450), external negroni-ios XNU-8796 kernel.
+# This is the iOS 16 profile; unixnu-negroni/ is the separate iPadOS 17 port.
+# Pass a Mach-O with chained rebases already applied to UniXNU --kernel.
+# See README.md: final boot packaging MUST use uefi/negroni/shim-mu.sh noflash.
+
+[board]
+name = "negroni"
+soc = "SM8450"
+description = "OnePlus 10 Pro 5G - negroni-ios XNU"
+kit = "negroni"
+
+[firmware]
+config = "negroni"
+dsc = "Platforms/OnePlus/negroniPkg/negroni.dsc"
+fd = "Build/negroniPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+submodules = [
+  "Mu_Basecore",
+  "Common/Mu",
+  "Common/Mu_OEM_Sample",
+  "Silicium-ACPI",
+  "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl",
+]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/OnePlus",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Common/Features/mu_feature_dfci",
+  "{uefi}/Common/Features/mu_feature_config",
+  "{uefi}/Mu_Basecore",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/OnePlus",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+]
+
+[firmware.defines]
+ENABLE_SECUREBOOT = "0"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "negroni-ios"
+
+[payload]
+volume = "NEGRONIESP"
+size_mib = 64
+loader = "firmware"
+title = "OnePlus 10 Pro - iOS 16 (negroni-ios XNU)"
+dram_size = "0xc0000000"
+panic_screen = false
+timeout = 3
+kernel_args = [
+  "debug=0xc",
+  "serial=3",
+  "cpus=1",
+  "keepsyms=1",
+  "-enable_kprintf_spam",
+  "-noprogress",
+  "io=0xc",
+  "rd=ufsroot0",
+  "unentitled_ios_sim_launch=1",
+  "ignition_level=1",
+  "wdt_test=no_user_checkin",
+  "ufsrw=1",
+  "rootrw=1",
+  "launchd_unsecure_cache=1",
+  "wdt=-1",
+  "negronikeys=1",
+  "negronitouch=0",
+  "negroniusb=0",
+  "negronifb_noconsole=0",
+  "negronifb_hz=30",
+]
+
+[payload.adt]
+tool = "scripts/make-negroni-ios-adt.py"
+unique_chip_id = "required"
+# 3 GiB starting at 0x840000000; must agree with Mu's Kernel RAM window.
+owned_memory_size = "0xc0000000"
+
+# Describes the required container, but does NOT make UniXNU's generic BootShim
+# suitable for this device. Use the ios-sweet shim wrapper documented above.
+[bootimg.image]
+header_version = 4
+pagesize = 4096
+cmdline = "bootconfig"

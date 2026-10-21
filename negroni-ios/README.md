@@ -1,7 +1,38 @@
 # negroni-ios: iOS 16 (iPhone X userland) on the OnePlus 10 Pro 5G (SM8450)
 
 Standalone XNU port for negroni, booted by Mu-Silicium from internal storage the way Windows is:
-no UniXNU and no DarwinBoot.
+The direct loader and the UniXNU/DarwinBoot payload path are both available.
+
+## UniXNU board profile
+
+`board.toml` describes the external XNU-8796 kernel for the OnePlus 10 Pro,
+following the external-kernel guacamole layout. This differs from
+`../unixnu-negroni/board.toml`, which builds/prelinks the iPadOS 17 kernel.
+Use this directory as the UniXNU device repository and set `IOS_SWEET_ROOT`
+to the absolute ios-sweet checkout path so the ADT adapter can find its tools.
+Supply the platform seed with `UNIXNU_UNIQUE_CHIP_ID`; never commit it.
+
+The profile keeps one CPU and the console enabled, adds `io=0xc`, selects
+`rd=ufsroot0`, and disables unported touch and USB. The ADT includes
+`/negroni-ufs` and a 3 GiB window at `0x840000000`. Mu's Kernel RAM allocation
+must agree with this window. This configuration is not a confirmed hang fix.
+
+Prerequisites/limits:
+- Firmware paths refer to the patched Mu-Silicium negroni checkout. Enable
+  UniXNU, UniXNUDxe and DarwinBoot in its DSC/FDF (some checked-in versions
+  still comment them out for WinPE). The two FrontPage feature checkouts in
+  `Common/Features` must already exist.
+- UniXNU copies `--kernel` verbatim. Apply this kernel's chained rebases first;
+  `tools/mkdarwinboot.py` already performs this when making a FAT payload.
+  Do not pass an unprocessed CI Mach-O to the generic payload builder.
+- Final packaging still uses `ESP=PAYLOAD.img ../uefi/negroni/shim-mu.sh noflash`.
+  UniXNU's generic bootimg builder uses a different BootShim layout; setting
+  header v4 alone does not reproduce the working negroni wrapper, which places
+  the FV followed by the aligned FAT volume in the ramdisk. The display DTB
+  comes from the separately prepared vendor_boot. Do not copy guacamole's
+  header-v0 offsets or SurfaceDuo firmware paths.
+- Board/ADT validation is host-side only; no firmware build or phone boot is
+  implied by the existence of this profile.
 
 - `xnu/patches/`: xnu-8796 (macOS 13.5 / iOS 16 generation) patch set, imported from the ios-sweet
   (Redmi Note 10 Pro, SM7150) port with `tools/rename-from-sweet.py` and adapted to SM8450 from here on.

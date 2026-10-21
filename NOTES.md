@@ -1,5 +1,15 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## Active photo triage (2026-10-21)
+
+- Board-profile milestone: user supplied a guacamole external-kernel UniXNU board example and requested the OnePlus 10 Pro equivalent. Added `negroni-ios/board.toml` for the photographed XNU-8796 kernel, plus `scripts/make-negroni-ios-adt.py` adapter and README instructions. The existing `unixnu-negroni` iPadOS 17 profile is separate. New profile uses actual negroni Mu paths, header v4, `cpus=1`, `io=0xc`, `rd=ufsroot0`, `negroni*` args and visible console. Host validation passed TOML parsing, command-line size, ADT UFS node, 0x840000000/3 GiB window, supplied seed, and rejection of unequal memory windows. No new CI run/build/flash/boot. Generic UniXNU bootimg still does not implement this phone's working shim/FV/FAT layout; use `shim-mu.sh noflash`. Raw CI kernel chained rebases must be applied before generic UniXNU payload packaging. See README prerequisites, including enabling firmware modules commented out for WinPE.
+
+- User reports a hang while launching through UniXNU; exact image and arguments unknown (another agent prepared it). Photo shows `negroni-ios` firmware identity, NEGRONI platform/AKS/WDT/SURF/HID/BATTERY/FB registrations, framebuffer 1080x2412 presented as 1125x2436, VM/zone and OSLog text. No readable NEGRONI UFS line. Photo alone does not identify the blocked instruction; output from different console paths must not be assumed chronological.
+- Source match: these are the standalone `negroni-ios` XNU-8796 messages, which `negroni-ios/tools/mkdarwinboot.py` can package for UniXNU/DarwinBoot. Do not confuse this kernel with `unixnu-negroni` XNU-10063/NativeUfs.
+- In this kernel, patch 0028 calls `negroni_ufs_rootdev` from IOFindBSDRoot only for `rd=ufsroot0`. Absence of UFS output does not prove a UFS failure or prove IOFindBSDRoot was not entered: check arguments and instrument entry before MMIO if needed.
+- Photo includes NEGRONI BATTERY; patch 0089 removes its matching personality. Inference: photographed kernel predates 0089. CI checked via WSL gh: run 39667736006 at commit 12def7ec7864a0c8417720d38eadccab3c579437 was in progress; prior run 39655324144 at 318dbf5fec77eef254fb8e81a331ea79c9121680 succeeded. No new build, flash, or hardware test performed in this triage.
+- Next: identify the actual packaged kernel and boot args; finish/check 39667736006, then verify the replacement payload includes that kernel before a separately authorized boot-partition flash. If still hung, capture IOKit start tracing (`io=0xc`) and timer/backtrace output; add entry breadcrumbs before UFS GCC/MMIO access if necessary. Patch 0089's power-clock hypothesis is not a demonstrated fix for this photo.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-20: second board, OnePlus 10 Pro 5G "negroni" (SM8450) <<<
