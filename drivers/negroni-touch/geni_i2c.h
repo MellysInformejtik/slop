@@ -44,6 +44,7 @@
 #define SE_GENI_RX_WATERMARK_REG	0x810
 #define SE_GENI_RX_RFR_WATERMARK_REG	0x814
 #define SE_HW_PARAM_0			0xe24
+#define SE_GENI_IOS			0x908	/* bit0 RX data in (SDA), bit1 IO2 data in (SCL) */
 
 #define GENI_SE_I2C			3	/* FW_REV protocol field, bits 15:8 */
 

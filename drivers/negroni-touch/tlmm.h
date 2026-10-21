@@ -45,15 +45,49 @@ static inline int tlmm_in(volatile uint8_t *tlmm, unsigned pin)
 }
 
 /* I2C pins to qup4 with pull-ups, ATTN input, reset and 1.8 V enable as outputs (reset held). */
-static inline void nt_pins_setup(volatile uint8_t *tlmm)
+/* SDA/SCL on qup4 with pull-ups */
+static inline void nt_pins_setup_i2c(volatile uint8_t *tlmm)
 {
 	tlmm_cfg(tlmm, NT_PIN_I2C_SDA, TLMM_FUNC(NT_FUNC_QUP4) | TLMM_DRIVE_MA(2) | TLMM_PULL_UP);
 	tlmm_cfg(tlmm, NT_PIN_I2C_SCL, TLMM_FUNC(NT_FUNC_QUP4) | TLMM_DRIVE_MA(2) | TLMM_PULL_UP);
+}
+
+static inline void nt_pins_setup(volatile uint8_t *tlmm)
+{
+	nt_pins_setup_i2c(tlmm);
 	tlmm_cfg(tlmm, NT_PIN_IRQ, TLMM_FUNC(0) | TLMM_DRIVE_MA(8) | TLMM_PULL_NONE);
 	tlmm_out(tlmm, NT_PIN_RESET, 0);
 	tlmm_cfg(tlmm, NT_PIN_RESET, TLMM_FUNC(0) | TLMM_DRIVE_MA(8) | TLMM_PULL_NONE | TLMM_OE);
 	tlmm_out(tlmm, NT_PIN_1V8_EN, 1);	/* 1.8 V load switch on */
 	tlmm_cfg(tlmm, NT_PIN_1V8_EN, TLMM_FUNC(0) | TLMM_DRIVE_MA(2) | TLMM_PULL_NONE | TLMM_OE);
+}
+
+/*
+ * I2C bus recovery (i2c_generic_scl_recovery): SDA held low by a target that was cut off mid-byte.
+ * Pins as GPIO, open drain emulated with OE: up to 9 SCL pulses until SDA is released, then STOP.
+ * Returns the SDA level afterwards (1 = bus free). The caller puts the pins back on qup4.
+ */
+static inline int nt_i2c_recover(volatile uint8_t *tlmm, void (*udelay)(unsigned))
+{
+	uint32_t in = TLMM_FUNC(0) | TLMM_DRIVE_MA(2) | TLMM_PULL_UP;
+
+	tlmm_cfg(tlmm, NT_PIN_I2C_SDA, in);
+	tlmm_cfg(tlmm, NT_PIN_I2C_SCL, in);
+	udelay(10);
+	for (int i = 0; i < 9 && !tlmm_in(tlmm, NT_PIN_I2C_SDA); i++) {
+		tlmm_out(tlmm, NT_PIN_I2C_SCL, 0);
+		tlmm_cfg(tlmm, NT_PIN_I2C_SCL, in | TLMM_OE);		/* drive SCL low */
+		udelay(5);
+		tlmm_cfg(tlmm, NT_PIN_I2C_SCL, in);			/* release: pulled high */
+		udelay(5);
+	}
+	/* STOP: SDA low -> high while SCL is high */
+	tlmm_out(tlmm, NT_PIN_I2C_SDA, 0);
+	tlmm_cfg(tlmm, NT_PIN_I2C_SDA, in | TLMM_OE);
+	udelay(5);
+	tlmm_cfg(tlmm, NT_PIN_I2C_SDA, in);
+	udelay(5);
+	return tlmm_in(tlmm, NT_PIN_I2C_SDA);
 }
 
 #endif

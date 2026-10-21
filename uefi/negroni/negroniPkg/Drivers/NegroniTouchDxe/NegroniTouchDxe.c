@@ -175,8 +175,16 @@ Probe (
        (int)((*(volatile UINT32 *)(Tlmm + TLMM_IO (NT_PIN_1V8_EN)) >> 1) & 1),
        tlmm_in (Tlmm, NT_PIN_IRQ));
 
+  // bus state with the pins as GPIO inputs (pull-ups): both should read 1 on an idle bus
+  Log ("lines before: sda %d scl %d (1 = released)\n", tlmm_in (Tlmm, NT_PIN_I2C_SDA), tlmm_in (Tlmm, NT_PIN_I2C_SCL));
+  if (!tlmm_in (Tlmm, NT_PIN_I2C_SDA) || !tlmm_in (Tlmm, NT_PIN_I2C_SCL)) {
+    Log ("bus recovery: sda now %d\n", nt_i2c_recover (Tlmm, WaitUs));
+  }
+
+  nt_pins_setup_i2c (Tlmm);
   Rc = geni_i2c_init (&mI2c);
-  Log ("SE4 proto %u fifo %u init %d\n", geni_i2c_proto (&mI2c), mI2c.tx_depth, Rc);
+  Log ("SE4 proto %u fifo %u init %d fw 0x%x clk_cfg 0x%x ios 0x%x (bit0 sda bit1 scl)\n", geni_i2c_proto (&mI2c), mI2c.tx_depth, Rc,
+       geni_rd (&mI2c, GENI_FW_REVISION_RO), geni_rd (&mI2c, GENI_SER_M_CLK_CFG), geni_rd (&mI2c, SE_GENI_IOS));
   if (Rc != GENI_I2C_OK) {
     return;
   }
@@ -186,7 +194,7 @@ Probe (
     int      R      = geni_i2c_read (&mI2c, S3908_ADDR, Raw, 4);
 
     Log ("raw read %d (0 ok -2 nack -3 bus -4 timeout) %02x %02x %02x %02x\n", R, Raw[0], Raw[1], Raw[2], Raw[3]);
-    Log ("geni status 0x%x m_irq 0x%x\n", geni_rd (&mI2c, SE_GENI_STATUS), geni_rd (&mI2c, SE_GENI_M_IRQ_STATUS));
+    Log ("geni status 0x%x m_irq 0x%x ios 0x%x\n", geni_rd (&mI2c, SE_GENI_STATUS), geni_rd (&mI2c, SE_GENI_M_IRQ_STATUS), geni_rd (&mI2c, SE_GENI_IOS));
   }
 
   mTcm.io.ctx   = &mI2c;
