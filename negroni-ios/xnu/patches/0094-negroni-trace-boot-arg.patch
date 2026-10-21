@@ -1,8 +1,16 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 1fb629e..dc011af 100644
+index 1fb629e..4769bdd 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1962,9 +1962,17 @@ sleh_irq(arm_saved_state_t *state)
+@@ -55,6 +55,7 @@
+ #include <machine/atomic.h>
+ #include <machine/limits.h>
+ 
++#include <pexpert/pexpert.h>
+ #include <pexpert/arm/protos.h>
+ #include <pexpert/arm64/apple_arm64_regs.h>
+ #include <pexpert/arm64/board_config.h>
+@@ -1962,9 +1963,17 @@ sleh_irq(arm_saved_state_t *state)
  	if (intid >= 1020 && intid <= 1023) {
  		return; /* spurious */
  	}
