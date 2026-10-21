@@ -26,7 +26,7 @@
 #define NT_PIN_I2C_SCL		17
 #define NT_PIN_RESET		20	/* active low */
 #define NT_PIN_IRQ		21	/* ATTN, active low */
-#define NT_PIN_1V8_EN		186	/* enable1v8_gpio, active low */
+#define NT_PIN_1V8_EN		186	/* enable1v8_gpio: driven high to enable (oplus touchpanel uses the raw gpio number, the DT flag is not applied) */
 #define NT_FUNC_QUP4		1
 
 static inline void tlmm_cfg(volatile uint8_t *tlmm, unsigned pin, uint32_t cfg)
@@ -52,7 +52,7 @@ static inline void nt_pins_setup(volatile uint8_t *tlmm)
 	tlmm_cfg(tlmm, NT_PIN_IRQ, TLMM_FUNC(0) | TLMM_DRIVE_MA(8) | TLMM_PULL_NONE);
 	tlmm_out(tlmm, NT_PIN_RESET, 0);
 	tlmm_cfg(tlmm, NT_PIN_RESET, TLMM_FUNC(0) | TLMM_DRIVE_MA(8) | TLMM_PULL_NONE | TLMM_OE);
-	tlmm_out(tlmm, NT_PIN_1V8_EN, 0);	/* active low: enabled */
+	tlmm_out(tlmm, NT_PIN_1V8_EN, 1);	/* 1.8 V load switch on */
 	tlmm_cfg(tlmm, NT_PIN_1V8_EN, TLMM_FUNC(0) | TLMM_DRIVE_MA(2) | TLMM_PULL_NONE | TLMM_OE);
 }
 

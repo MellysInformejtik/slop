@@ -17,6 +17,7 @@
 #include "tlmm.h"
 #include "geni_i2c.h"
 #include "syna_tcm.h"
+#include "rpmh.h"
 
 #define SE4_BASE   0x00990000UL
 #define S3908_ADDR 0x4b
@@ -35,6 +36,23 @@ STATIC CONST CHAR8 *mClocks[] = {
 STATIC int I2cRead (void *Ctx, uint8_t *Buf, uint32_t Len)   { return geni_i2c_read (Ctx, S3908_ADDR, Buf, Len); }
 STATIC int I2cWrite (void *Ctx, const uint8_t *Buf, uint32_t Len) { return geni_i2c_write (Ctx, S3908_ADDR, Buf, Len); }
 STATIC void Wait1ms (void) { gBS->Stall (1000); }
+STATIC void WaitUs (unsigned Us) { gBS->Stall (Us); }
+
+// S3908 supplies (downstream DT synaptics20031@4B): vcc_1v8 = L6C 1.8 V, vdd_2v8 = L3C 3.008 V
+STATIC
+VOID
+PowerOn (
+  CONST CHAR8  *Res,
+  unsigned     Mv
+  )
+{
+  struct rh_diag  D = { 0 };
+  int             Rc = rh_vreg_enable (Res, Mv, WaitUs, &D);
+
+  DEBUG ((DEBUG_ERROR, "NTOUCH: rpmh %a %u mV -> %d (-1 geometry -2 cmd-db -3 lookup -4 busy -5 send -6 timeout)\n", Res, Mv, Rc));
+  DEBUG ((DEBUG_ERROR, "NTOUCH: rpmh id 0x%x config 0x%x tcs %u ncpt %u db v%u addr 0x%x tcs%u irq 0x%x idle 0x%x st %x/%x/%x\n",
+          D.id, D.config, D.tcs_count, D.ncpt, D.db_version, D.address, D.tcs, D.irq, D.idle, D.status[0], D.status[1], D.status[2]));
+}
 
 STATIC
 VOID
@@ -82,10 +100,13 @@ NegroniTouchDxeEntry (
   UINTN           Try;
 
   EnableClocks ();
+  // power: 1.8 V (L6C + load switch), then 2.8 V (L3C); reset held low throughout
+  PowerOn ("ldoc6", 1800);
   nt_pins_setup (Tlmm);
-  gBS->Stall (10 * 1000);
+  PowerOn ("ldoc3", 3008);
+  gBS->Stall (200 * 1000);            // synaptics,power-delay-ms
   tlmm_out (Tlmm, NT_PIN_RESET, 1);   // release reset
-  gBS->Stall (200 * 1000);            // firmware boot
+  gBS->Stall (200 * 1000);            // synaptics,reset-delay-ms: firmware boot
 
   Rc = geni_i2c_init (&mI2c);
   DEBUG ((DEBUG_ERROR, "NTOUCH: SE4 proto %u fifo %u init %d\n", geni_i2c_proto (&mI2c), mI2c.tx_depth, Rc));

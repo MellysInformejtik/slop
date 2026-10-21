@@ -12,6 +12,7 @@
   tlmm.h
   geni_i2c.h
   syna_tcm.h
+  rpmh.h
 
 [Packages]
   MdePkg/MdePkg.dec
