@@ -129,6 +129,10 @@ jobs:
           # hash in the audit) and the recorded hash of the pruned QEMU class observation, as its fallback expects.
           cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-owner-mobile-graphics-candidate.macho"
           cp out/negroni/kernel/kernel.json "$T/build/native-prelink/native-owner-mobile-graphics-candidate.json"
+          # NativeHidInput (built by the legacy display archive) audits against a candidate of this name family; same
+          # original kernelcache and slide, so the original IOHIDFamily it checks is identical
+          cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-owner-ufs-cpu-desktop-stage1-candidate.macho"
+          cp out/negroni/kernel/kernel.json "$T/build/native-prelink/native-owner-ufs-cpu-desktop-stage1-candidate.json"
           mkdir -p "$T/build/display-analysis"
           [ -f "$T/build/display-analysis/mobile-graphics-legacy-abi.json" ] ||
             echo '{"runtime_metadata_checkpoint_sha256": "3044c2beff552911605994c0dc7aa73182066cbb5aed0b396999ceeb5a96da2b"}' \
