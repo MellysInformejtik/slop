@@ -153,6 +153,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/logs"
           cp -R out/negroni/logs "$RUNNER_TEMP/logs/" 2>/dev/null || true
           cp out/state.json "$RUNNER_TEMP/logs/" 2>/dev/null || true
+          # archive builders keep only a tail in their log; the full compiler output stays in the tree
+          (cd out/negroni/tree/build 2>/dev/null && find . -name compile.log -maxdepth 3 | while read -r f; do
+            cp "$f" "$RUNNER_TEMP/logs/compile-$(echo "${f#./}" | tr / _)"; done) || true
           find out/negroni -maxdepth 2 -name '*.json' -exec cp {} "$RUNNER_TEMP/logs/" \; 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
