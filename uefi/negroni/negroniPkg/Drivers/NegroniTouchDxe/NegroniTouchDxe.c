@@ -111,6 +111,7 @@ STATIC UINT32 Be32 (UINT32 V) { return SwapBytes32 (V); }
 
 STATIC
 VOID
+__attribute__ ((unused))
 PatchI2cConfig (
   VOID
   )
