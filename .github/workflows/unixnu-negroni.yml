@@ -98,8 +98,8 @@ jobs:
           python3 - "$S1/board.toml" <<'PY'
           import re, sys
           p = sys.argv[1]; s = open(p).read()
-          for pat in (r'  "build-native-legacy-display.py",\n',):
-              s = re.sub(pat, '', s)
+          # stage 1: the empty legacy display probe instead of the real driver
+          s = s.replace('  "build-native-legacy-display.py",\n', '  "build-legacy-display-stub.py",\n')
           open(p, 'w').write(s)
           PY
           ./unixnu defconfig negroni_stage1_defconfig -D "$S1"
