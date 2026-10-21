@@ -261,14 +261,23 @@ run(['xcrun','ar','rcs',archive,gop_late])
 import re as _re
 _undef = set(run(['xcrun','nm','-u','-j',archive],text=True).split())
 _defined = set(run(['xcrun','nm','-U','-j','-g',archive],text=True).split())
-_gpu = sorted(n for n in _undef - _defined if _re.search(r'Adreno|ShengGmu|AdrenoHfi|AdrenoPM4', n))
+_gpu = sorted(n for n in _undef - _defined if _re.search(r'adreno|shenggmu|adrenohfi|adrenopm4|boot_progress', n, _re.I))
 if _gpu:
+    # A symbol reached by a BRANCH26 relocation (bl/b) is code: a stub returning 0. Anything else (ADRP/ADD, GOT) is data
+    # the probes may read or write: a zeroed 4 KiB block in __DATA.
+    _relocs = run(['xcrun','llvm-objdump','--macho','-r',archive],text=True)
+    # llvm-objdump --macho -r rows: address pcrel length extern type scattered symbol, e.g. "...  BR26  False _sym"
+    _branch = set(m.group(1) for m in _re.finditer(r'\bBR26\b.*?\s(_\S+)\s*$', _relocs, _re.M))
+    _code = [n for n in _gpu if n in _branch]
+    _data = [n for n in _gpu if n not in _branch]
     _stub_s = OUT/'negroni-gpu-stubs.s'
-    _stub_s.write_text('.text\n' + ''.join(f'.globl "{n}"\n.p2align 2\n"{n}":\n  mov x0, #0\n  ret\n' for n in _gpu))
+    _stub_s.write_text('.text\n' + ''.join(f'.globl "{n}"\n.p2align 2\n"{n}":\n  mov x0, #0\n  ret\n' for n in _code) +
+                       '.data\n' + ''.join(f'.globl "{n}"\n.p2align 4\n"{n}":\n  .space 4096\n' for n in _data))
     _stub_o = OUT/'negroni-gpu-stubs.o'
     run(['xcrun','--sdk','iphoneos','clang','-target','arm64-apple-ios17.0','-c',_stub_s,'-o',_stub_o])
     run(['xcrun','ar','rcs',archive,_stub_o])
-    print(f'negroni: {len(_gpu)} Adreno/GMU symbols stubbed')
+    print(f'negroni: stubbed {len(_code)} Adreno/GMU/boot-progress functions and {len(_data)} data symbols')
+    print('negroni code stubs: ' + ' '.join(_code))
 sources.extend([ROOT/'drivers/NativeMobileDisplay/NativeGOPPresenter.cpp',ROOT/'drivers/NativeMobileDisplay/NativeGOPWire.h'])
 (OUT/'build-report.json').write_text(json.dumps(dict(
     source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources},generated_abi_sha256=sha(OUT/'OriginalLegacyFramebufferABI.h'),
