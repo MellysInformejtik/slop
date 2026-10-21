@@ -93,6 +93,17 @@ NegroniTouchDxeEntry (
     return EFI_SUCCESS;
   }
 
+  {
+    uint8_t  Raw[4] = { 0 };
+    int      R      = geni_i2c_read (&mI2c, S3908_ADDR, Raw, 4);
+
+    DEBUG ((DEBUG_ERROR, "NTOUCH: raw read %d (-2 nack -3 bus -4 timeout) %02x %02x %02x %02x\n", R, Raw[0], Raw[1], Raw[2], Raw[3]));
+    DEBUG ((DEBUG_ERROR, "NTOUCH: geni status 0x%x m_irq 0x%x reset pin %d 1v8 pin %d\n",
+            geni_rd (&mI2c, SE_GENI_STATUS), geni_rd (&mI2c, SE_GENI_M_IRQ_STATUS),
+            (int)((*(volatile UINT32 *)(Tlmm + TLMM_IO (NT_PIN_RESET)) >> 1) & 1),
+            (int)((*(volatile UINT32 *)(Tlmm + TLMM_IO (NT_PIN_1V8_EN)) >> 1) & 1)));
+  }
+
   mTcm.io.ctx   = &mI2c;
   mTcm.io.read  = I2cRead;
   mTcm.io.write = I2cWrite;
@@ -115,5 +126,6 @@ NegroniTouchDxeEntry (
 
   Rc = tcm_get_report_config (&mTcm, Wait1ms);
   DEBUG ((DEBUG_ERROR, "NTOUCH: report config %d, %u bytes\n", Rc, mTcm.config_len));
+  DEBUG ((DEBUG_ERROR, "NTOUCH: attn now %d (0 = message waiting)\n", tlmm_in (Tlmm, NT_PIN_IRQ)));
   return EFI_SUCCESS;
 }
