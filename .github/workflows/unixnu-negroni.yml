@@ -86,9 +86,41 @@ jobs:
           ./unixnu status
           ./unixnu ipsw fetch
 
-      - name: Build
+      # Ladder: UniXNU's VirtIO/RAM block bindings (and with them the owner-root chain and boot progress) read
+      # build/storage-abi/interface-audit.json, which audit-storage-interface.py makes from a prelinked candidate
+      # build/native-prelink/native-apfs-load-positive.macho that no published script produces. Stage 1 builds and
+      # prelinks a kernel without those parts; that candidate feeds the audit; stage 2 is the real negroni build.
+      - name: Stage 1 kernel (audit candidate)
         working-directory: ${{ runner.temp }}/UniXNU
-        run: ./unixnu build ${{ inputs.steps || 'kernel payload' }}
+        run: |
+          S1="$RUNNER_TEMP/unixnu-negroni-stage1"
+          rm -rf "$S1"; cp -R "$GITHUB_WORKSPACE/unixnu-negroni" "$S1"
+          python3 - "$S1/board.toml" <<'PY'
+          import re, sys
+          p = sys.argv[1]; s = open(p).read()
+          for pat in (r'  "build-arm-driver.py NativeVirtioBlock",\n', r'  "build-arm-driver.py NativeRamBlock",\n',
+                      r'  "build-native-virtio-bindings.py[^"]*",\n', r'  "build-boot-progress.py",\n'):
+              s = re.sub(pat, '', s)
+          open(p, 'w').write(s)
+          PY
+          ./unixnu defconfig negroni_stage1_defconfig -D "$S1"
+          ./unixnu build kernel
+
+      - name: Storage interface audit
+        working-directory: ${{ runner.temp }}/UniXNU
+        run: |
+          T=out/negroni/tree
+          mkdir -p "$T/build/native-prelink"
+          cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-apfs-load-positive.macho"
+          cp out/negroni/kernel/kernel.json "$T/build/native-prelink/native-apfs-load-positive.json"
+          (cd "$T" && python3 scripts/audit-storage-interface.py)
+          ls -la "$T/build/storage-abi/interface-audit.json"
+
+      - name: Stage 2 build
+        working-directory: ${{ runner.temp }}/UniXNU
+        run: |
+          ./unixnu defconfig negroni_defconfig -D "$GITHUB_WORKSPACE/unixnu-negroni"
+          ./unixnu build ${{ inputs.steps || 'kernel payload' }}
 
       - name: Encrypt outputs
         if: success()

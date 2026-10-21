@@ -48,6 +48,10 @@ archives = [
   "build-native-aes-bindings.py",
   "prepare-storage-headers.py",
   "build-arm-driver.py NativeUfs",
+  "build-arm-driver.py NativeVirtioBlock",
+  "build-arm-driver.py NativeRamBlock",
+  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
+  "build-native-virtio-bindings.py --component NativeVirtioBlock",
   "build-mockfs-fixture.py",
   "build-boot-progress.py",
   "build-libpthread-kernel.py",
@@ -174,7 +178,7 @@ chip_id = "207"
 owned_memory_size = "0x130000000"   # inside Mu's "Kernel RAM" region 0x841000000 + 0x13F000000
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 cpu_regs = "0"                      # one CPU first; negroni MPIDRs are also core << 8
-packed_data_ramdisk = false              # NativeRamBlock is off: its bindings need an old local prelink candidate
+packed_data_ramdisk = false              # no Data ramdisk seed (--data-ramdisk) yet; DarwinBoot refuses the placeholder without one
 ipad_identity = true
 unique_chip_id = "required"          # the platform seed is not stored in any repository
 
