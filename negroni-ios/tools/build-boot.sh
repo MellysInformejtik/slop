@@ -26,7 +26,7 @@ import os, shutil, sys
 from pyfatfs.PyFatFS import PyFatFS
 from pyfatfs.PyFat import PyFat
 img, loader, payload = sys.argv[1:]
-size = ((os.path.getsize(payload) + os.path.getsize(loader)) // (1 << 20) + 16) << 20
+size = max(48, (os.path.getsize(payload) + os.path.getsize(loader)) // (1 << 20) + 16) << 20   # FAT32 needs >= 65525 clusters
 open(img, 'wb').truncate(size)
 pf = PyFat(); pf.mkfs(img, fat_type=PyFat.FAT_TYPE_FAT32, label='NEGRONIIOS', size=size); pf.close()
 fs = PyFatFS(img)
