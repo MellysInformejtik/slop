@@ -133,6 +133,11 @@ jobs:
           # original kernelcache and slide, so the original IOHIDFamily it checks is identical
           cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-owner-ufs-cpu-desktop-stage1-candidate.macho"
           cp out/negroni/kernel/kernel.json "$T/build/native-prelink/native-owner-ufs-cpu-desktop-stage1-candidate.json"
+          # audit-amfi-pmgr-contract.py reads the original kernelcache from the firmware cache; the prelink step already
+          # decompressed and pinned it under out/ipsw
+          KC=$(find out/ipsw -name kernelcache.decompressed | head -1); test -n "$KC"
+          mkdir -p "$T/.cache/firmware/kernelcache.macho"
+          cp "$KC" "$T/.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed"
           mkdir -p "$T/build/display-analysis"
           [ -f "$T/build/display-analysis/mobile-graphics-legacy-abi.json" ] ||
             echo '{"runtime_metadata_checkpoint_sha256": "3044c2beff552911605994c0dc7aa73182066cbb5aed0b396999ceeb5a96da2b"}' \
