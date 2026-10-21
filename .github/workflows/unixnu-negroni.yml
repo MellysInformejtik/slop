@@ -104,7 +104,7 @@ jobs:
           # stage 1: the empty legacy display probe instead of the real driver
           s = s.replace('  "build-native-legacy-display.py",\n', '  "build-legacy-display-stub.py",\n')
           # stage 1 is only the audit candidate: no block drivers (NativeUfs/NativeRamBlock need the audit's bindings)
-          for line in ('  "build-arm-driver.py NativeUfs",\n', '  "build-arm-driver.py NativeRamBlock",\n',
+          for line in ('  "build-sheng-platform-power.py",\n', '  "build-arm-driver.py NativeUfs",\n', '  "build-arm-driver.py NativeRamBlock",\n',
                        '  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",\n'):
               s = s.replace(line, '')
           open(p, 'w').write(s)

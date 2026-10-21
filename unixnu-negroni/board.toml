@@ -50,6 +50,7 @@ archives = [
   "build-arm-driver.py NativeUfs",
   "build-arm-driver.py NativeRamBlock",
   "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
+  "build-sheng-platform-power.py",
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
   "build-native-legacy-display.py",
@@ -158,6 +159,7 @@ kernel_args = [
   "-apfs_shared_datavolume",
   "offline-key-events=1",
   "native-ufs-root=1",
+  "sheng-pmgr=2",                   # publishes the original ApplePMGR nub for AMFI; touches no hardware
   "armcpu-diagnostics=1",
   "sheng-disable-watchdogd=1",
   "sheng-disable-jobs=com.apple.identityservicesd,com.apple.locationd,com.apple.CommCenter,com.apple.bluetoothd",
