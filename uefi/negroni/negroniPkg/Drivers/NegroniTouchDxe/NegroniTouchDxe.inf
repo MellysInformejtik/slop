@@ -36,8 +36,13 @@
   UefiDriverEntryPoint
   UefiLib
 
+[Guids]
+  gEfiEndOfDxeEventGroupGuid
+
 [Protocols]
+  gEfiAbsolutePointerProtocolGuid
   gEfiClockProtocolGuid
+  gEfiDevicePathProtocolGuid
   gEfiLoadedImageProtocolGuid
   gEfiVariableWriteArchProtocolGuid
 

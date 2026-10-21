@@ -21,6 +21,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
 #include <Protocol/EFIClock.h>
+#include <Protocol/AbsolutePointer.h>
 #include <Protocol/LoadedImage.h>
 
 #include "tlmm.h"
@@ -39,6 +40,7 @@ STATIC struct tcm       mTcm;
 STATIC struct tlmm_i2c  mGpioPins = { (volatile uint8_t *)(TLMM_BASE + TLMM_CTL(NT_PIN_I2C_SDA)) };
 STATIC struct gpio_i2c  mGpioI2c;
 STATIC BOOLEAN         mUseGpio;
+STATIC BOOLEAN          mReady;       // report config read: the poll timer may use the bus
 STATIC CHAR8            mLog[NEGRONI_TOUCH_LOG_SIZE];
 STATIC UINTN            mLogLen;
 STATIC EFI_GUID         mLogProtocolGuid = NEGRONI_TOUCH_LOG_PROTOCOL_GUID;
@@ -327,6 +329,7 @@ Probe (
   int             Rc;
   UINTN           Try;
 
+  mReady  = FALSE;
   mLogLen = 0;
   mLog[0] = 0;
   ZeroMem (&mTcm, sizeof (mTcm));
@@ -443,7 +446,166 @@ Probe (
   Log ("config bus %d hdr %02x %02x %02x %02x\n", mTcm.transport_error,
        mTcm.header[0], mTcm.header[1], mTcm.header[2], mTcm.header[3]);
   Log ("Interrupt line: %a\n", tlmm_in (Tlmm, NT_PIN_IRQ) ? "idle (high)" : "message waiting (low)");
+  mReady = (Rc == 0);
+  Log ("Touch pointer (front page): %a\n", mReady ? "active (OK)" : "off (no report config)");
 
+}
+
+//
+// EFI_ABSOLUTE_POINTER_PROTOCOL for the front page: a 10 ms timer reads a TouchComm message while
+// ATTN (active low) is asserted and reports the first finger in panel coordinates.
+//
+STATIC EFI_ABSOLUTE_POINTER_MODE   mPointerMode = {
+  0, 0, 0, TCM_PANEL_MAX_X, TCM_PANEL_MAX_Y, 0, 0
+};
+STATIC EFI_ABSOLUTE_POINTER_STATE  mPointerState;
+STATIC BOOLEAN                     mPointerChanged;
+STATIC EFI_ABSOLUTE_POINTER_PROTOCOL  mPointer;
+
+STATIC
+EFI_STATUS
+EFIAPI
+PointerReset (
+  IN EFI_ABSOLUTE_POINTER_PROTOCOL  *This,
+  IN BOOLEAN                        ExtendedVerification
+  )
+{
+  ZeroMem (&mPointerState, sizeof (mPointerState));
+  mPointerChanged = FALSE;
+  return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+PointerGetState (
+  IN     EFI_ABSOLUTE_POINTER_PROTOCOL  *This,
+  OUT    EFI_ABSOLUTE_POINTER_STATE     *State
+  )
+{
+  if (State == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if (!mPointerChanged) {
+    return EFI_NOT_READY;
+  }
+
+  CopyMem (State, &mPointerState, sizeof (*State));
+  mPointerChanged = FALSE;
+  return EFI_SUCCESS;
+}
+
+STATIC
+VOID
+EFIAPI
+PointerWaitForInput (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  if (mPointerChanged) {
+    gBS->SignalEvent (Event);
+  }
+}
+
+STATIC
+VOID
+EFIAPI
+PointerPoll (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  volatile UINT8  *Tlmm = (volatile UINT8 *)(UINTN)TLMM_BASE;
+  UINTN           Msg;
+  UINTN           Obj;
+  BOOLEAN         Down;
+
+  if (!mReady) {
+    return;
+  }
+
+  for (Msg = 0; Msg < 4 && !tlmm_in (Tlmm, NT_PIN_IRQ); Msg++) {
+    if ((tcm_read_message (&mTcm) != 0) || (mTcm.code != TCM_REPORT_TOUCH) || (tcm_parse_touch (&mTcm) < 0)) {
+      continue;
+    }
+
+    Down = FALSE;
+    for (Obj = 0; Obj < TCM_MAX_OBJECTS; Obj++) {
+      if (mTcm.obj[Obj].status != 0) {
+        mPointerState.CurrentX = MIN (mTcm.obj[Obj].x, TCM_PANEL_MAX_X);
+        mPointerState.CurrentY = MIN (mTcm.obj[Obj].y, TCM_PANEL_MAX_Y);
+        Down = TRUE;
+        break;
+      }
+    }
+
+    if (Down || (mPointerState.ActiveButtons != 0)) {
+      mPointerState.ActiveButtons = Down ? EFI_ABSP_TouchActive : 0;
+      mPointerChanged = TRUE;
+    }
+  }
+}
+
+STATIC EFI_HANDLE  mPointerHandle;
+
+// ConSplitter binds the pointer only when the handle is connected; it is loaded after this driver.
+STATIC
+VOID
+EFIAPI
+ConnectPointer (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  gBS->CloseEvent (Event);
+  DEBUG ((DEBUG_ERROR, "NTOUCH: connect pointer %r\n", gBS->ConnectController (mPointerHandle, NULL, NULL, TRUE)));
+}
+
+STATIC
+EFI_STATUS
+InstallPointer (
+  VOID
+  )
+{
+  STATIC struct {
+    VENDOR_DEVICE_PATH          Vendor;
+    EFI_DEVICE_PATH_PROTOCOL    End;
+  } Path = {
+    {
+      { HARDWARE_DEVICE_PATH, HW_VENDOR_DP, { sizeof (VENDOR_DEVICE_PATH), 0 } },
+      { 0x4b2e9d71, 0x0c6a, 0x4f83, { 0x9e, 0x15, 0x7a, 0x3d, 0x2c, 0x8b, 0x5f, 0x61 } }
+    },
+    { END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE, { sizeof (EFI_DEVICE_PATH_PROTOCOL), 0 } }
+  };
+  EFI_EVENT   Timer;
+  EFI_EVENT   EndOfDxe;
+  EFI_STATUS  Status;
+
+  mPointerMode.Attributes = 0;
+  mPointer.Reset    = PointerReset;
+  mPointer.GetState = PointerGetState;
+  mPointer.Mode     = &mPointerMode;
+  Status = gBS->CreateEvent (EVT_NOTIFY_WAIT, TPL_NOTIFY, PointerWaitForInput, NULL, &mPointer.WaitForInput);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->CreateEvent (EVT_TIMER | EVT_NOTIFY_SIGNAL, TPL_CALLBACK, PointerPoll, NULL, &Timer);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  gBS->SetTimer (Timer, TimerPeriodic, 10 * 10000);   // 10 ms
+  Status = gBS->InstallMultipleProtocolInterfaces (&mPointerHandle, &gEfiDevicePathProtocolGuid, &Path,
+                  &gEfiAbsolutePointerProtocolGuid, &mPointer, NULL);
+  DEBUG ((DEBUG_ERROR, "NTOUCH: absolute pointer %r\n", Status));
+  if (!EFI_ERROR (Status)) {
+    gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, ConnectPointer, NULL, &gEfiEndOfDxeEventGroupGuid, &EndOfDxe);
+  }
+
+  return Status;
 }
 
 STATIC
@@ -453,7 +615,10 @@ Rerun (
   VOID
   )
 {
+  EFI_TPL  OldTpl = gBS->RaiseTPL (TPL_CALLBACK);   // keep the poll timer off the bus
+
   Probe ();
+  gBS->RestoreTPL (OldTpl);
   return EFI_SUCCESS;
 }
 
@@ -534,6 +699,7 @@ NegroniTouchDxeEntry (
 
   Probe ();
   gBS->InstallMultipleProtocolInterfaces (&Handle, &mLogProtocolGuid, &mLogProtocol, NULL);
+  InstallPointer ();
 
   // Boot#### needs writable variables
   if (!EFI_ERROR (gBS->CreateEvent (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, AddDiagBootOption, NULL, &Event))) {

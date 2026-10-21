@@ -535,3 +535,5 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Patch 0085 thread dump: boot thread blocked in ml_wait_max_cpus <- kperf_init_early <- kernel_bootstrap_thread.
 - Cause: NegroniCPU matches 'qcom,kryo470' but the negroni ADT CPUs were 'qcom,kryo780' only, so ml_set_max_cpus never ran.
 - Fix: mkadt.py adds 'qcom,kryo470' as a second CPU compatible. boot_a rebuilt (~/ios-work/negroni-ios-out/unixnu/boot_a.img); not yet booted.
+- Kernel 0090 (CI 39672588453): UFS failures print sense key/asc/ascq; TUR retried 20x (10 ms), START STOP UNIT on NOT READY. Seen before 0090: GDSC on, clocks on, TUR -> response 0x1 status 0x2 (CHECK CONDITION) x3 -> root panic.
+- NegroniTouchDxe: GPIO I2C fallback works (identify + report config OK). Added EFI_ABSOLUTE_POINTER (10 ms poll on ATTN, panel coords 5760x12864), connected at EndOfDxe. boot_a (kernel 0090 + pointer) built, not yet tested.
