@@ -261,7 +261,7 @@ run(['xcrun','ar','rcs',archive,gop_late])
 import re as _re
 _undef = set(run(['xcrun','nm','-u','-j',archive],text=True).split())
 _defined = set(run(['xcrun','nm','-U','-j','-g',archive],text=True).split())
-_gpu = sorted(n for n in _undef - _defined if _re.search(r'adreno|shenggmu|adrenohfi|adrenopm4|boot_progress', n, _re.I))
+_gpu = sorted(n for n in _undef - _defined if _re.search(r'adreno|shenggmu|adrenohfi|adrenopm4|boot_progress|native_gpu_addon', n, _re.I))
 if _gpu:
     # A symbol reached by a BRANCH26 relocation (bl/b) is code: a stub returning 0. Anything else (ADRP/ADD, GOT) is data
     # the probes may read or write: a zeroed 4 KiB block in __DATA.
