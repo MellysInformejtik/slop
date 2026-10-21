@@ -14,7 +14,7 @@
   geni_i2c.h
   syna_tcm.h
   rpmh.h
-  gpi_i2c.h
+  EFII2C.h
 
 [Packages]
   MdePkg/MdePkg.dec

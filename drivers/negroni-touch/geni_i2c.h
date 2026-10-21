@@ -17,6 +17,8 @@
 #include <stdint.h>
 
 #define GENI_FORCE_DEFAULT_REG		0x020
+#define GENI_IF_DISABLE_RO		0x064	/* bit0 FIFO_IF_DISABLE: SE usable only through GPI DMA */
+#define FIFO_IF_DISABLE			(1u << 0)
 #define SE_GENI_STATUS			0x040
 #define GENI_SER_M_CLK_CFG		0x048
 #define GENI_FW_REVISION_RO		0x068

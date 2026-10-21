@@ -70,8 +70,6 @@
 #define TCE_UNEXP_ERR		16u
 
 /* GENI SE registers for GPI mode (qcom-geni-se.c / geni-se.h) */
-#define GENI_IF_DISABLE_RO	0x064
-#define FIFO_IF_DISABLE		(1u << 0)
 #define SE_GSI_EVENT_EN		0xe18
 #define SE_IRQ_EN		0xe1c
 

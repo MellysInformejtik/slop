@@ -26,7 +26,7 @@
 #include "geni_i2c.h"
 #include "syna_tcm.h"
 #include "rpmh.h"
-#include "gpi_i2c.h"
+#include "EFII2C.h"
 #include "NegroniTouchLog.h"
 
 #define SE4_BASE   0x00990000UL
@@ -69,18 +69,41 @@ Log (
   mLogLen += Len;
 }
 
-// SE4 FIFO interface is disabled by the firmware on negroni: bytes move through GPI DMA (gpi_i2c.h)
-STATIC struct gpi_i2c  mGpi;
-STATIC BOOLEAN         mUseGpi;
+// SE4 FIFO interface is disabled by the firmware on negroni and Qualcomm's GpiDxe owns the GPI engine:
+// transfers go through Qualcomm's I2CDxe (EFI_QCOM_I2C_PROTOCOL), which drives the SE in GPI mode.
+STATIC EFI_GUID               mQcomI2cGuid = QCOM_I2C_PROTOCOL_GUID;
+STATIC EFI_QCOM_I2C_PROTOCOL  *mQcomI2c;
+STATIC VOID                   *mQcomHandle;
+STATIC UINT32                 mQcomInstance;
+STATIC I2C_SLAVE_CONFIG       mQcomCfg = { I2C_FAST_MODE_FREQ_KHZ, S3908_ADDR, I2C, 2500, 0, 0 };
+
+STATIC int QcomStatus (I2C_STATUS St)
+{
+  return St == I2C_SUCCESS ? GENI_I2C_OK : (St == I2C_ERROR_ADDR_NACK || St == I2C_ERROR_DATA_NACK) ? GENI_I2C_NACK :
+         St == I2C_ERROR_TRANSFER_TIMEOUT ? GENI_I2C_TIMEOUT : GENI_I2C_BUS_ERR;
+}
+
+STATIC int QcomXfer (VOID *Handle, uint8_t *Buf, uint32_t Len, UINT32 Flags, I2C_STATUS *Raw)
+{
+  I2C_DESCRIPTOR  Desc = { Buf, Len, Flags };
+  UINT32          Done = 0;
+  I2C_STATUS      St   = mQcomI2c->Transfer (Handle, &mQcomCfg, &Desc, 1, NULL, NULL, 0, &Done);
+
+  if (Raw != NULL) {
+    *Raw = St;
+  }
+
+  return QcomStatus (St);
+}
 
 STATIC int I2cRead (void *Ctx, uint8_t *Buf, uint32_t Len)
 {
-  return mUseGpi ? gpi_i2c_read (&mGpi, S3908_ADDR, Buf, Len) : geni_i2c_read (Ctx, S3908_ADDR, Buf, Len);
+  return mQcomHandle ? QcomXfer (mQcomHandle, Buf, Len, I2C_READ_TRANSFER, NULL) : geni_i2c_read (Ctx, S3908_ADDR, Buf, Len);
 }
 
 STATIC int I2cWrite (void *Ctx, const uint8_t *Buf, uint32_t Len)
 {
-  return mUseGpi ? gpi_i2c_write (&mGpi, S3908_ADDR, Buf, Len) : geni_i2c_write (Ctx, S3908_ADDR, Buf, Len);
+  return mQcomHandle ? QcomXfer (mQcomHandle, (uint8_t *)Buf, Len, I2C_WRITE_TRANSFER, NULL) : geni_i2c_write (Ctx, S3908_ADDR, Buf, Len);
 }
 STATIC void Wait1ms (void) { gBS->Stall (1000); }
 STATIC void WaitUs (unsigned Us) { gBS->Stall (Us); }
@@ -236,26 +259,44 @@ Probe (
     return;
   }
 
-  mUseGpi = (geni_rd (&mI2c, GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE) != 0;
-  Log ("Transfer mode: %a\n", mUseGpi ? "GPI DMA (firmware disabled the FIFO)" : "FIFO");
-  if (mUseGpi) {
-    if (mGpi.mem == NULL) {
-      EFI_PHYSICAL_ADDRESS  Pa = 0xFFFFFFFF;
+  {
+    BOOLEAN  FifoOff = (geni_rd (&mI2c, GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE) != 0;
 
-      if (!EFI_ERROR (gBS->AllocatePages (AllocateMaxAddress, EfiBootServicesData, EFI_SIZE_TO_PAGES (GPI_I2C_MEM), &Pa))) {
-        mGpi.mem    = (uint8_t *)(UINTN)Pa;
-        mGpi.mem_pa = Pa;
+    Log ("Transfer mode: %a\n", FifoOff ? "GPI (firmware disabled the FIFO) via Qualcomm I2CDxe" : "FIFO");
+    if (FifoOff && (mQcomHandle == NULL)) {
+      if (EFI_ERROR (gBS->LocateProtocol (&mQcomI2cGuid, NULL, (VOID **)&mQcomI2c))) {
+        Log ("Qualcomm I2C protocol: NOT FOUND\n");
+        return;
       }
-    }
 
-    mGpi.gpi    = (volatile uint8_t *)(UINTN)GPI_EE_BASE;
-    mGpi.se     = (volatile uint8_t *)SE4_BASE;
-    mGpi.udelay = WaitUs;
-    Rc          = mGpi.mem ? gpi_i2c_init (&mGpi) : GPI_E_NO_GPII;
-    Log ("GPI DMA: %a [%d] gpii %u\n", Rc == 0 ? "ready (OK)" : Rc == GPI_E_NO_GPII ? "FAILED (no free GPII / no memory)" :
-         "FAILED (channel command timeout)", Rc, mGpi.n);
-    if (Rc != 0) {
-      return;
+      // find the instance that is QUP0 SE4: the one where the S3908 answers
+      for (UINT32 Inst = 1; Inst <= 24 && mQcomHandle == NULL; Inst++) {
+        VOID        *H = NULL;
+        uint8_t     B[4];
+        I2C_STATUS  St;
+
+        DEBUG ((DEBUG_ERROR, "NTOUCH: trying I2C instance %u\n", Inst));   // a hang shows which one
+        St = mQcomI2c->Open (Inst, &H);
+
+        if (St != I2C_SUCCESS) {
+          continue;
+        }
+
+        if (QcomXfer (H, B, sizeof (B), I2C_READ_TRANSFER, &St) == GENI_I2C_OK) {
+          mQcomHandle   = H;
+          mQcomInstance = Inst;
+        } else {
+          mQcomI2c->Close (H);
+        }
+
+        Log ("  I2C instance %u: %a [%d]\n", Inst, St == I2C_SUCCESS ? "touch chip answers (OK)" :
+             (St == I2C_ERROR_ADDR_NACK) ? "no chip at 0x4b" : "error", St);
+      }
+
+      Log ("Qualcomm I2C: %a instance %u\n", mQcomHandle ? "using (OK)" : "NO INSTANCE REACHES THE CHIP", mQcomInstance);
+      if (mQcomHandle == NULL) {
+        return;
+      }
     }
   }
 
@@ -290,10 +331,7 @@ Probe (
   Rc = tcm_get_report_config (&mTcm, Wait1ms);
   Log ("Touch report config: %a [%d, %u bytes]\n", Rc == 0 ? "OK" : "FAILED", Rc, mTcm.config_len);
   Log ("Interrupt line: %a\n", tlmm_in (Tlmm, NT_PIN_IRQ) ? "idle (high)" : "message waiting (low)");
-  if (mUseGpi) {
-    Log ("GPI last event: %08x %08x %08x %08x\n", mGpi.last_ev[0], mGpi.last_ev[1], mGpi.last_ev[2], mGpi.last_ev[3]);
-    gpi_release (&mGpi);   // the OS driver brings up its own GPII
-  }
+
 }
 
 STATIC
