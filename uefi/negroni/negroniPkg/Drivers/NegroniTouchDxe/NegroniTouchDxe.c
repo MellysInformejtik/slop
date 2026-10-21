@@ -73,6 +73,37 @@ STATIC int I2cWrite (void *Ctx, const uint8_t *Buf, uint32_t Len) { return geni_
 STATIC void Wait1ms (void) { gBS->Stall (1000); }
 STATIC void WaitUs (unsigned Us) { gBS->Stall (Us); }
 
+STATIC CONST CHAR8 *
+RpmhText (
+  int  Rc
+  )
+{
+  switch (Rc) {
+    case 0: return "ON (OK)";
+    case RH_E_GEOMETRY: return "FAILED (RPMh controller not recognised)";
+    case RH_E_CMDDB: return "FAILED (cmd-db unreadable)";
+    case RH_E_LOOKUP: return "FAILED (regulator not in cmd-db)";
+    case RH_E_BUSY: return "FAILED (controller busy)";
+    case RH_E_SEND: return "FAILED (write did not stick)";
+    case RH_E_TIMEOUT: return "FAILED (timeout)";
+    default: return "FAILED";
+  }
+}
+
+STATIC CONST CHAR8 *
+I2cText (
+  int  Rc
+  )
+{
+  switch (Rc) {
+    case GENI_I2C_OK: return "answers (OK)";
+    case GENI_I2C_NACK: return "NO ANSWER (NACK, unpowered or wrong address)";
+    case GENI_I2C_BUS_ERR: return "BUS ERROR";
+    case GENI_I2C_TIMEOUT: return "TIMEOUT (bus not clocking)";
+    default: return "FAILED";
+  }
+}
+
 STATIC
 VOID
 DumpTcs (
@@ -104,8 +135,10 @@ PowerOn (
   struct rh_diag  D = { 0 };
   int             Rc = rh_vreg_enable (Res, Mv, WaitUs, &D);
 
-  Log ("rpmh %a %u mV -> %d (0 ok -1 geometry -2 cmd-db -3 lookup -4 busy -5 send -6 timeout)\n", Res, Mv, Rc);
-  Log ("  id 0x%x config 0x%x tcs %u ncpt %u db v%u addr 0x%x used tcs%u\n", D.id, D.config, D.tcs_count, D.ncpt, D.db_version, D.address, D.tcs);
+  Log ("Power %a %u mV: %a [%d]\n", Res, Mv, RpmhText (Rc), Rc);
+  if (Rc != 0) {
+    Log ("  id 0x%x config 0x%x tcs %u ncpt %u db v%u addr 0x%x tcs%u\n", D.id, D.config, D.tcs_count, D.ncpt, D.db_version, D.address, D.tcs);
+  }
   if (Rc != 0) {
     DumpTcs ();
   }
@@ -176,9 +209,11 @@ Probe (
        tlmm_in (Tlmm, NT_PIN_IRQ));
 
   // bus state with the pins as GPIO inputs (pull-ups): both should read 1 on an idle bus
-  Log ("lines before: sda %d scl %d (1 = released)\n", tlmm_in (Tlmm, NT_PIN_I2C_SDA), tlmm_in (Tlmm, NT_PIN_I2C_SCL));
+  Log ("I2C lines: %a [sda %d scl %d]\n",
+       (tlmm_in (Tlmm, NT_PIN_I2C_SDA) && tlmm_in (Tlmm, NT_PIN_I2C_SCL)) ? "free (OK)" : "STUCK LOW",
+       tlmm_in (Tlmm, NT_PIN_I2C_SDA), tlmm_in (Tlmm, NT_PIN_I2C_SCL));
   if (!tlmm_in (Tlmm, NT_PIN_I2C_SDA) || !tlmm_in (Tlmm, NT_PIN_I2C_SCL)) {
-    Log ("bus recovery: sda now %d\n", nt_i2c_recover (Tlmm, WaitUs));
+    Log ("I2C bus recovery: %a\n", nt_i2c_recover (Tlmm, WaitUs) ? "freed (OK)" : "still stuck");
   }
 
   nt_pins_setup_i2c (Tlmm);
@@ -193,7 +228,7 @@ Probe (
     uint8_t  Raw[4] = { 0 };
     int      R      = geni_i2c_read (&mI2c, S3908_ADDR, Raw, 4);
 
-    Log ("raw read %d (0 ok -2 nack -3 bus -4 timeout) %02x %02x %02x %02x\n", R, Raw[0], Raw[1], Raw[2], Raw[3]);
+    Log ("Touch chip: %a [%d] data %02x %02x %02x %02x\n", I2cText (R), R, Raw[0], Raw[1], Raw[2], Raw[3]);
     Log ("geni status 0x%x m_irq 0x%x ios 0x%x\n", geni_rd (&mI2c, SE_GENI_STATUS), geni_rd (&mI2c, SE_GENI_M_IRQ_STATUS), geni_rd (&mI2c, SE_GENI_IOS));
   }
 
@@ -211,13 +246,15 @@ Probe (
     gBS->Stall (10 * 1000);
   }
 
-  Log ("read %d code 0x%x len %u attn %d\n", Rc, mTcm.code, mTcm.payload_len, tlmm_in (Tlmm, NT_PIN_IRQ));
+  Log ("TouchComm message: %a [%d code 0x%x len %u]\n", Rc == 0 ? "received (OK)" : Rc > 0 ? "none waiting" : "FAILED (no 0xA5 marker / bus error)",
+       Rc, mTcm.code, mTcm.payload_len);
   if ((Rc == 0) && (mTcm.code == TCM_REPORT_IDENTIFY) && (mTcm.payload_len >= 2)) {
     Log ("identify version %u mode %u\n", mTcm.payload[0], mTcm.payload[1]);
   }
 
   Rc = tcm_get_report_config (&mTcm, Wait1ms);
-  Log ("report config %d, %u bytes; attn %d (0 = message waiting)\n", Rc, mTcm.config_len, tlmm_in (Tlmm, NT_PIN_IRQ));
+  Log ("Touch report config: %a [%d, %u bytes]\n", Rc == 0 ? "OK" : "FAILED", Rc, mTcm.config_len);
+  Log ("Interrupt line: %a\n", tlmm_in (Tlmm, NT_PIN_IRQ) ? "idle (high)" : "message waiting (low)");
 }
 
 STATIC
@@ -271,10 +308,18 @@ AddDiagBootOption (
     return;
   }
 
-  Status = EfiBootManagerInitializeLoadOption (&Option, LoadOptionNumberUnassigned, LoadOptionTypeBoot, LOAD_OPTION_ACTIVE,
+  Status = EfiBootManagerInitializeLoadOption (&Option, LoadOptionNumberUnassigned, LoadOptionTypeBoot, LOAD_OPTION_ACTIVE | LOAD_OPTION_CATEGORY_APP,
              L"Touch diagnostics", Path, NULL, 0);
   if (!EFI_ERROR (Status)) {
     Options = EfiBootManagerGetLoadOptions (&Count, LoadOptionTypeBoot);
+    // an entry from an older build without CATEGORY_APP would sit in BootOrder ahead of Windows
+    for (UINTN Index = 0; Index < Count; Index++) {
+      if ((StrCmp (Options[Index].Description, L"Touch diagnostics") == 0) &&
+          ((Options[Index].Attributes & LOAD_OPTION_CATEGORY) != LOAD_OPTION_CATEGORY_APP))
+      {
+        EfiBootManagerDeleteLoadOptionVariable (Options[Index].OptionNumber, LoadOptionTypeBoot);
+      }
+    }
     if (EfiBootManagerFindLoadOption (&Option, Options, Count) < 0) {
       Status = EfiBootManagerAddLoadOptionVariable (&Option, (UINTN)-1);
       DEBUG ((DEBUG_ERROR, "NTOUCH: boot entry \"Touch diagnostics\" %r\n", Status));
