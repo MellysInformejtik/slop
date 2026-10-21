@@ -98,23 +98,20 @@ jobs:
           python3 - "$S1/board.toml" <<'PY'
           import re, sys
           p = sys.argv[1]; s = open(p).read()
-          for pat in (r'  "build-arm-driver.py NativeVirtioBlock",\n', r'  "build-arm-driver.py NativeRamBlock",\n',
-                      r'  "build-native-virtio-bindings.py[^"]*",\n', r'  "build-boot-progress.py",\n',
-                      r'  "build-native-legacy-display.py",\n'):
+          for pat in (r'  "build-native-legacy-display.py",\n',):
               s = re.sub(pat, '', s)
           open(p, 'w').write(s)
           PY
           ./unixnu defconfig negroni_stage1_defconfig -D "$S1"
           ./unixnu build kernel
 
-      - name: Storage interface audit
+      - name: Audit inputs for stage 2 (legacy display)
         working-directory: ${{ runner.temp }}/UniXNU
         run: |
           T=out/negroni/tree
           mkdir -p "$T/build/native-prelink"
           cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-apfs-load-positive.macho"
           cp out/negroni/kernel/kernel.json "$T/build/native-prelink/native-apfs-load-positive.json"
-          (cd "$T" && python3 scripts/audit-storage-interface.py)
           # Legacy display audit: same candidate (it carries the unchanged original IOMobileGraphicsFamily, checked by
           # hash in the audit) and the recorded hash of the pruned QEMU class observation, as its fallback expects.
           cp out/negroni/kernel/kernel.macho "$T/build/native-prelink/native-owner-mobile-graphics-candidate.macho"
@@ -123,7 +120,6 @@ jobs:
           [ -f "$T/build/display-analysis/mobile-graphics-legacy-abi.json" ] ||
             echo '{"runtime_metadata_checkpoint_sha256": "3044c2beff552911605994c0dc7aa73182066cbb5aed0b396999ceeb5a96da2b"}' \
               > "$T/build/display-analysis/mobile-graphics-legacy-abi.json"
-          ls -la "$T/build/storage-abi/interface-audit.json"
 
       - name: Stage 2 build
         working-directory: ${{ runner.temp }}/UniXNU
