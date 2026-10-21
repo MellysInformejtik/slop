@@ -48,6 +48,8 @@ archives = [
   "build-native-aes-bindings.py",
   "prepare-storage-headers.py",
   "build-arm-driver.py NativeUfs",
+  "build-arm-driver.py NativeRamBlock",
+  "build-native-virtio-bindings.py --component NativeRamBlock --directory build/native-ram-block",
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
   "build-native-legacy-display.py",
