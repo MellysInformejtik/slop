@@ -63,7 +63,11 @@ jobs:
 
       - name: UniXNU
         run: |
-          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/UniXNU/UniXNU.git "$RUNNER_TEMP/UniXNU"
+          # pinned: the commit of the last green negroni build (upstream changes the bootstrap code this workflow patches)
+          U="$RUNNER_TEMP/UniXNU"; git init -q "$U"
+          git -C "$U" fetch -q --depth 1 https://github.com/UniXNU/UniXNU.git fb2bb310564ce66779e472a021881cf7c5764919
+          git -C "$U" checkout -q FETCH_HEAD
+          git -C "$U" submodule update -q --init --recursive --depth 1
           git -C "$RUNNER_TEMP/UniXNU" log -1 --format='UniXNU %H %cd'
           # NativeUfs is written for sheng (SM8550): SM8450 compatible, GCC branches and UFS stream ID
           python3 "$GITHUB_WORKSPACE/unixnu-negroni/scripts/patch-native-ufs.py" "$RUNNER_TEMP/UniXNU/drivers/NativeUfs"
