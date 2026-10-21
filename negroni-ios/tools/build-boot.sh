@@ -13,7 +13,7 @@ loader=$mu/Build/negroniPkg/DEBUG_CLANGPDB/AARCH64/NegroniXnuBoot.efi
 py=${PY:-$HOME/ios-work/mu-venv/bin/python}
 # Kernel window: bottom 3 GiB of the 0x840000000 bank (Mu "Kernel RAM"); the loader checks it is free RAM.
 dram=${DRAM:-840000000:C0000000}
-cmdline=${CMDLINE:-debug=0xc serial=3 cpus=1 keepsyms=1 -noprogress rd=ufsroot0 wdt=-1 negronikeys=1 negronitouch=0 negroniusb=0}
+cmdline=${CMDLINE:-debug=0xc serial=3 cpus=1 keepsyms=1 -noprogress rd=ufsroot0 ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin launchd_unsecure_cache=1 wdt=-1 negronikeys=1 negronitouch=0 negroniusb=0}
 
 mkdir -p "$out"
 python3 "$here/mkadt.py" "$out/negroni.adt" --board negroni --ufs --dram "$dram"
