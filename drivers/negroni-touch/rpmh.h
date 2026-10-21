@@ -121,13 +121,48 @@ static inline int rh_lookup(const char *res, struct rh_diag *d)
 	return matches == 1 ? 0 : RH_E_LOOKUP;
 }
 
-static inline int rh_tcs_free(unsigned t)
+/* All commands this TCS has enabled report issued + complete (CMD_STATUS). */
+static inline int rh_tcs_cmds_done(unsigned t, unsigned ncpt)
+{
+	uint32_t b = RH_TCS_BASE + t * RH_TCS_STRIDE;
+	uint32_t enabled = rh_rd(b + RH_ENABLE);
+	for (unsigned c = 0; c < ncpt; c++) {
+		uint32_t st = rh_rd(b + RH_CMD_STATUS + c * RH_CMD_STRIDE);
+		if ((enabled & (1u << c)) && (st == 0xffffffffu || (st & (RH_ISSUED | RH_COMPLETE)) != (RH_ISSUED | RH_COMPLETE)))
+			return 0;
+	}
+	return 1;
+}
+
+/*
+ * Free like Linux tcs_is_free(): DRV_STATUS idle and no trigger pending. Qualcomm's UEFI RpmhDxe
+ * leaves finished requests in place (AMC_EN, CMD_ENABLE bits, the IRQ bit), so a TCS whose enabled
+ * commands all completed is reusable; its old command slots are overwritten below.
+ */
+static inline int rh_tcs_free(unsigned t, unsigned ncpt)
 {
 	uint32_t b = RH_TCS_BASE + t * RH_TCS_STRIDE;
 	uint32_t idle = rh_rd(b + RH_STATUS);
-	return idle != 0 && idle != 0xffffffffu && rh_rd(b + RH_CONTROL) == 0 &&
-	       rh_rd(b + RH_ENABLE) == 0 && rh_rd(b + RH_WAIT) == 0 &&
-	       !(rh_rd(RH_TCS_BASE + RH_IRQ_STATUS) & (1u << t));
+	return idle != 0 && idle != 0xffffffffu && !(rh_rd(b + RH_CONTROL) & RH_TRIGGER) && rh_tcs_cmds_done(t, ncpt);
+}
+
+/* Raw state of one TCS for the diagnostics screen. */
+struct rh_tcs_state {
+	uint32_t idle, control, enable, wait, addr[3], data[3], status[3];
+};
+
+static inline void rh_tcs_dump(unsigned t, struct rh_tcs_state *s)
+{
+	uint32_t b = RH_TCS_BASE + t * RH_TCS_STRIDE;
+	s->idle = rh_rd(b + RH_STATUS);
+	s->control = rh_rd(b + RH_CONTROL);
+	s->enable = rh_rd(b + RH_ENABLE);
+	s->wait = rh_rd(b + RH_WAIT);
+	for (unsigned c = 0; c < 3; c++) {
+		s->addr[c] = rh_rd(b + RH_ADDR + c * RH_CMD_STRIDE);
+		s->data[c] = rh_rd(b + RH_DATA + c * RH_CMD_STRIDE);
+		s->status[c] = rh_rd(b + RH_CMD_STATUS + c * RH_CMD_STRIDE);
+	}
 }
 
 /* Vote resource res (e.g. "ldoc3") on at mv millivolts, PMIC5 LDO high-power mode. */
@@ -149,15 +184,18 @@ static inline int rh_vreg_enable(const char *res, unsigned mv, void (*udelay)(un
 	if (rc)
 		return rc;
 
+	/* highest ACTIVE TCS first: Qualcomm's RpmhDxe starts from TCS 0 */
 	int chosen = -1;
-	for (unsigned t = 0; t < RH_ACTIVE_N; t++) {
-		uint32_t b = RH_TCS_BASE + t * RH_TCS_STRIDE;
+	for (int t = RH_ACTIVE_N - 1; t >= 0; t--) {
+		uint32_t b = RH_TCS_BASE + (uint32_t)t * RH_TCS_STRIDE;
 		uint32_t enabled = rh_rd(b + RH_ENABLE);
+		int done = rh_tcs_cmds_done((unsigned)t, d->ncpt);
+		/* the same regulator still in flight elsewhere: wait for it rather than race it */
 		for (unsigned c = 0; c < d->ncpt; c++)
-			if ((enabled & (1u << c)) && (rh_rd(b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == d->address)
+			if (!done && (enabled & (1u << c)) && (rh_rd(b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == d->address)
 				return RH_E_BUSY;
-		if (chosen < 0 && rh_tcs_free(t))
-			chosen = (int)t;
+		if (chosen < 0 && rh_tcs_free((unsigned)t, d->ncpt))
+			chosen = t;
 	}
 	if (chosen < 0)
 		return RH_E_BUSY;
@@ -168,6 +206,10 @@ static inline int rh_vreg_enable(const char *res, unsigned mv, void (*udelay)(un
 	d->tcs = t;
 	if (!rh_sync(RH_TCS_BASE + RH_IRQ_EN, irq_en & ~bit, udelay))
 		return RH_E_SEND;
+	/* a finished request left by RpmhDxe: switch its commands off and clear its completion bit */
+	if (!rh_sync(b + RH_CONTROL, 0, udelay) || !rh_sync(b + RH_ENABLE, 0, udelay) || !rh_sync(b + RH_WAIT, 0, udelay))
+		return RH_E_SEND;
+	rh_wr(RH_TCS_BASE + RH_IRQ_CLEAR, bit);
 
 	/* voltage, mode, then enable (rpmh-regulator order) */
 	const uint32_t offsets[3] = { 0, 8, 4 };

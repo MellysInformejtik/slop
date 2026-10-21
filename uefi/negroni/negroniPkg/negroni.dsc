@@ -28,6 +28,10 @@
 !include WaipioPkg/WaipioPkg.dsc.inc
 
 [PcdsFixedAtBuild]
+  # negroni DEBUG: asserts print but do not dead-loop (Silicium 0x2F minus ASSERT_DEADLOOP 0x20). DxeCore's
+  # memory-map bin check (Page.c "entry type does not match special memory type bin") otherwise stops the boot.
+  gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x0F
+
   #
   # DDR Memory
   #
@@ -81,6 +85,7 @@
   negroniPkg/Drivers/NegroniBootMemoryDxe/NegroniBootMemoryDxe.inf
   negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
   negroniPkg/Drivers/NegroniTouchDxe/NegroniTouchDxe.inf
+  negroniPkg/Drivers/NegroniTouchDiag/NegroniTouchDiag.inf
 
   #
   # ACPI Tables

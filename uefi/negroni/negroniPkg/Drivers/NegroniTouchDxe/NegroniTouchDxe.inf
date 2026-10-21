@@ -8,6 +8,7 @@
 
 [Sources]
   NegroniTouchDxe.c
+  NegroniTouchLog.h
   # shared with the Windows and XNU drivers: drivers/negroni-touch in ios-sweet (copied here by shim-mu.sh)
   tlmm.h
   geni_i2c.h
@@ -16,16 +17,25 @@
 
 [Packages]
   MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
   QcomPkg/QcomPkg.dec
 
 [LibraryClasses]
   BaseLib
+  BaseMemoryLib
   DebugLib
+  DevicePathLib
+  MemoryAllocationLib
+  PrintLib
+  UefiBootManagerLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
+  UefiLib
 
 [Protocols]
   gEfiClockProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiVariableWriteArchProtocolGuid
 
 [Depex]
   gEfiClockProtocolGuid
