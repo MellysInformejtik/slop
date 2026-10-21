@@ -77,7 +77,8 @@ if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
 if component == 'NativeUfs':
     # negroni: no owner-root chain (no signed volume policy), so the UFS windows are read without block verification
     command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/NativeVirtioBlock'),
-                '-DNATIVE_VERIFIED_BLOCK=0', '-Wno-error', '-mgeneral-regs-only']
+                '-DNATIVE_VERIFIED_BLOCK=0', '-include', str(ROOT / 'scripts/native-ufs-unverified.h'),
+                '-Wno-error', '-mgeneral-regs-only']
 if component=='NativeOfflineGPU':
     command += ['-I',str(ROOT/'drivers/NativeVirtioConsole')]
 if component in ('NativeLegacyDisplay','NativeHidInput'):
