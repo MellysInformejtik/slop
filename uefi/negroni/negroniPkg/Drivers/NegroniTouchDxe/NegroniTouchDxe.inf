@@ -12,6 +12,8 @@
   # shared with the Windows and XNU drivers: drivers/negroni-touch in ios-sweet (copied here by shim-mu.sh)
   tlmm.h
   geni_i2c.h
+  gpio_i2c.h
+  tlmm_i2c.h
   syna_tcm.h
   rpmh.h
   EFII2C.h

@@ -2,13 +2,14 @@
  * NegroniTouch: Synaptics S3908 touchscreen of the OnePlus 10 Pro (negroni, SM8450) for Windows.
  *
  * There is no Qualcomm I2C/GPIO/clock stack for SM8450 on Windows, so this driver talks to the
- * hardware itself: the GENI serial engine QUP0 SE4 as an I2C master (drivers/negroni-touch/geni_i2c.h)
+ * hardware itself: GENI FIFO when available, otherwise open-drain GPIO16/17 software I2C,
  * and the TouchComm protocol (syna_tcm.h). Mu's NegroniTouchDxe leaves the SE clocks, the pin mux,
  * the 1.8 V enable and the reset line set up at ExitBootServices.
  *
- * ACPI device NEGT0001 (negroni SSDT) gives two memory resources:
+ * ACPI device NEGT0001 (negroni SSDT) gives three memory resources:
  *   0: QUP0 SE4 registers 0x00990000, 0x4000
  *   1: TLMM page of GPIO21 (ATTN, active low) 0x0F115000, 0x1000
+ *   2: TLMM pages of GPIO16/17 (SDA/SCL) 0x0F110000, 0x2000
  * The ATTN line is polled (no GPIO controller driver), 8 ms period, at PASSIVE_LEVEL.
  * Input goes to HID class through the Virtual HID Framework (vhf.sys, a lower filter per the INF).
  */
@@ -18,6 +19,7 @@
 #include <vhf.h>
 
 #include "geni_i2c.h"
+#include "tlmm_i2c.h"
 #include "syna_tcm.h"
 
 #define S3908_ADDR		0x4b
@@ -83,9 +85,12 @@ typedef struct {
 	WDFTIMER Timer;
 	struct geni_i2c I2c;
 	struct tcm Tcm;
+	struct gpio_i2c GpioI2c;
+	struct tlmm_i2c GpioPins;
+	BOOLEAN UseGpio;
 	volatile UCHAR *Se;
 	volatile UCHAR *GpioPage;	/* GPIO21 control page; io register at +4 */
-	SIZE_T SeLength, GpioLength;
+	SIZE_T SeLength, GpioLength, PinsLength;
 	BOOLEAN Ready;
 	volatile LONG Polling;
 	ULONG Down;			/* contact bitmap reported down last frame */
@@ -101,8 +106,17 @@ EVT_WDF_DEVICE_D0_EXIT NtD0Exit;
 EVT_WDF_TIMER NtPoll;
 EVT_VHF_ASYNC_OPERATION NtGetFeature;
 
-static int NtI2cRead(void *ctx, uint8_t *buf, uint32_t len) { return geni_i2c_read(ctx, S3908_ADDR, buf, len); }
-static int NtI2cWrite(void *ctx, const uint8_t *buf, uint32_t len) { return geni_i2c_write(ctx, S3908_ADDR, buf, len); }
+static int NtI2cRead(void *context, uint8_t *buf, uint32_t len) {
+	NT_CONTEXT *ctx = context;
+	return ctx->UseGpio ? gpio_i2c_read(&ctx->GpioI2c, S3908_ADDR, buf, len) :
+		geni_i2c_read(&ctx->I2c, S3908_ADDR, buf, len);
+}
+static int NtI2cWrite(void *context, const uint8_t *buf, uint32_t len) {
+	NT_CONTEXT *ctx = context;
+	return ctx->UseGpio ? gpio_i2c_write(&ctx->GpioI2c, S3908_ADDR, buf, len) :
+		geni_i2c_write(&ctx->I2c, S3908_ADDR, buf, len);
+}
+static void NtWaitUs(unsigned us) { KeStallExecutionProcessor(us); }
 static void NtWait1ms(void) { KeStallExecutionProcessor(1000); }
 
 static BOOLEAN NtAttention(NT_CONTEXT *ctx)
@@ -182,6 +196,9 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 		} else if (mem == 1) {
 			ctx->GpioPage = va;
 			ctx->GpioLength = d->u.Memory.Length;
+		} else if (mem == 2 && d->u.Memory.Start.QuadPart == 0x0f110000 && d->u.Memory.Length >= 0x2000) {
+			ctx->GpioPins.pins = va;
+			ctx->PinsLength = d->u.Memory.Length;
 		} else {
 			MmUnmapIoSpace(va, d->u.Memory.Length);
 		}
@@ -193,12 +210,16 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 	ctx->I2c.base = ctx->Se;
 	ctx->I2c.polls = 200000;
 	int initRc = geni_i2c_init(&ctx->I2c);
-	if (initRc != GENI_I2C_OK) {
+	ctx->UseGpio = initRc == GENI_I2C_FIFO_DISABLED;
+	if (ctx->UseGpio && ctx->GpioPins.pins) {
+		tlmm_i2c_init(&ctx->GpioI2c, &ctx->GpioPins, NtWaitUs);
+		KdPrint(("NegroniTouch: using open-drain GPIO16/17 I2C fallback\n"));
+	} else if (initRc != GENI_I2C_OK) {
 		KdPrint(("NegroniTouch: SE4 init %d proto %u IF_DISABLE 0x%x; -5 requires GPI DMA\n",
 			initRc, geni_i2c_proto(&ctx->I2c), geni_rd(&ctx->I2c, GENI_IF_DISABLE_RO)));
 		return STATUS_DEVICE_CONFIGURATION_ERROR;
 	}
-	ctx->Tcm.io.ctx = &ctx->I2c;
+	ctx->Tcm.io.ctx = ctx;
 	ctx->Tcm.io.read = NtI2cRead;
 	ctx->Tcm.io.write = NtI2cWrite;
 	/* drain what is pending (the IDENTIFY report of the reset done by UEFI), then fetch the report layout */
@@ -225,6 +246,9 @@ NTSTATUS NtReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
 		MmUnmapIoSpace((PVOID)ctx->Se, ctx->SeLength);
 	if (ctx->GpioPage)
 		MmUnmapIoSpace((PVOID)ctx->GpioPage, ctx->GpioLength);
+	if (ctx->GpioPins.pins)
+		MmUnmapIoSpace((PVOID)ctx->GpioPins.pins, ctx->PinsLength);
+	ctx->GpioPins.pins = NULL;
 	ctx->Se = ctx->GpioPage = NULL;
 	return STATUS_SUCCESS;
 }

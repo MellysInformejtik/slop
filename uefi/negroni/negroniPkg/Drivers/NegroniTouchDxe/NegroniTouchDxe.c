@@ -25,6 +25,7 @@
 
 #include "tlmm.h"
 #include "geni_i2c.h"
+#include "tlmm_i2c.h"
 #include "syna_tcm.h"
 #include "rpmh.h"
 #include "EFII2C.h"
@@ -35,6 +36,9 @@
 
 STATIC struct geni_i2c  mI2c = { (volatile uint8_t *)SE4_BASE, 0, 0 };
 STATIC struct tcm       mTcm;
+STATIC struct tlmm_i2c  mGpioPins = { (volatile uint8_t *)(TLMM_BASE + TLMM_CTL(NT_PIN_I2C_SDA)) };
+STATIC struct gpio_i2c  mGpioI2c;
+STATIC BOOLEAN         mUseGpio;
 STATIC CHAR8            mLog[NEGRONI_TOUCH_LOG_SIZE];
 STATIC UINTN            mLogLen;
 STATIC EFI_GUID         mLogProtocolGuid = NEGRONI_TOUCH_LOG_PROTOCOL_GUID;
@@ -193,11 +197,13 @@ PatchI2cConfig (
 
 STATIC int I2cRead (void *Ctx, uint8_t *Buf, uint32_t Len)
 {
+  if (mUseGpio) { return gpio_i2c_read (&mGpioI2c, S3908_ADDR, Buf, Len); }
   return mQcomHandle ? QcomXfer (mQcomHandle, Buf, Len, I2C_READ_TRANSFER, NULL) : geni_i2c_read (Ctx, S3908_ADDR, Buf, Len);
 }
 
 STATIC int I2cWrite (void *Ctx, const uint8_t *Buf, uint32_t Len)
 {
+  if (mUseGpio) { return gpio_i2c_write (&mGpioI2c, S3908_ADDR, Buf, Len); }
   return mQcomHandle ? QcomXfer (mQcomHandle, (uint8_t *)Buf, Len, I2C_WRITE_TRANSFER, NULL) : geni_i2c_write (Ctx, S3908_ADDR, Buf, Len);
 }
 STATIC void Wait1ms (void) { gBS->Stall (1000); }
@@ -324,7 +330,8 @@ Probe (
   mLogLen = 0;
   mLog[0] = 0;
   ZeroMem (&mTcm, sizeof (mTcm));
-  Log ("Touch probe v2: framed reads, transport diagnostics\n");
+  mUseGpio = FALSE;
+  Log ("Touch probe v3: GPIO I2C fallback\n");
 
   EnableClocks ();
   // power: 1.8 V (L6C + load switch), then 2.8 V (L3C); reset held low throughout
@@ -359,8 +366,13 @@ Probe (
   {
     BOOLEAN  FifoOff = (geni_rd (&mI2c, GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE) != 0;
 
-    Log ("Transfer mode: %a\n", FifoOff ? "GPI (firmware disabled the FIFO) via Qualcomm I2CDxe" : "FIFO");
-    if (FifoOff && (mQcomHandle == NULL)) {
+    Log ("Transfer mode: %a\n", FifoOff ? "GPIO open-drain (FIFO disabled)" : "FIFO");
+    if (FifoOff) {
+      // No GENI DMA register access; use the already accessible SDA/SCL GPIOs.
+      tlmm_i2c_init (&mGpioI2c, &mGpioPins, WaitUs);
+      mUseGpio = TRUE;
+    }
+    if (FifoOff && !mUseGpio && (mQcomHandle == NULL)) {
       if (EFI_ERROR (gBS->LocateProtocol (&mQcomI2cGuid, NULL, (VOID **)&mQcomI2c))) {
         Log ("Qualcomm I2C protocol: NOT FOUND\n");
         return;
