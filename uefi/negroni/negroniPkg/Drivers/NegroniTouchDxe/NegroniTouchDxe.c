@@ -26,6 +26,7 @@
 #include "geni_i2c.h"
 #include "syna_tcm.h"
 #include "rpmh.h"
+#include "gpi_i2c.h"
 #include "NegroniTouchLog.h"
 
 #define SE4_BASE   0x00990000UL
@@ -68,8 +69,19 @@ Log (
   mLogLen += Len;
 }
 
-STATIC int I2cRead (void *Ctx, uint8_t *Buf, uint32_t Len)   { return geni_i2c_read (Ctx, S3908_ADDR, Buf, Len); }
-STATIC int I2cWrite (void *Ctx, const uint8_t *Buf, uint32_t Len) { return geni_i2c_write (Ctx, S3908_ADDR, Buf, Len); }
+// SE4 FIFO interface is disabled by the firmware on negroni: bytes move through GPI DMA (gpi_i2c.h)
+STATIC struct gpi_i2c  mGpi;
+STATIC BOOLEAN         mUseGpi;
+
+STATIC int I2cRead (void *Ctx, uint8_t *Buf, uint32_t Len)
+{
+  return mUseGpi ? gpi_i2c_read (&mGpi, S3908_ADDR, Buf, Len) : geni_i2c_read (Ctx, S3908_ADDR, Buf, Len);
+}
+
+STATIC int I2cWrite (void *Ctx, const uint8_t *Buf, uint32_t Len)
+{
+  return mUseGpi ? gpi_i2c_write (&mGpi, S3908_ADDR, Buf, Len) : geni_i2c_write (Ctx, S3908_ADDR, Buf, Len);
+}
 STATIC void Wait1ms (void) { gBS->Stall (1000); }
 STATIC void WaitUs (unsigned Us) { gBS->Stall (Us); }
 
@@ -224,9 +236,32 @@ Probe (
     return;
   }
 
+  mUseGpi = (geni_rd (&mI2c, GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE) != 0;
+  Log ("Transfer mode: %a\n", mUseGpi ? "GPI DMA (firmware disabled the FIFO)" : "FIFO");
+  if (mUseGpi) {
+    if (mGpi.mem == NULL) {
+      EFI_PHYSICAL_ADDRESS  Pa = 0xFFFFFFFF;
+
+      if (!EFI_ERROR (gBS->AllocatePages (AllocateMaxAddress, EfiBootServicesData, EFI_SIZE_TO_PAGES (GPI_I2C_MEM), &Pa))) {
+        mGpi.mem    = (uint8_t *)(UINTN)Pa;
+        mGpi.mem_pa = Pa;
+      }
+    }
+
+    mGpi.gpi    = (volatile uint8_t *)(UINTN)GPI_EE_BASE;
+    mGpi.se     = (volatile uint8_t *)SE4_BASE;
+    mGpi.udelay = WaitUs;
+    Rc          = mGpi.mem ? gpi_i2c_init (&mGpi) : GPI_E_NO_GPII;
+    Log ("GPI DMA: %a [%d] gpii %u\n", Rc == 0 ? "ready (OK)" : Rc == GPI_E_NO_GPII ? "FAILED (no free GPII / no memory)" :
+         "FAILED (channel command timeout)", Rc, mGpi.n);
+    if (Rc != 0) {
+      return;
+    }
+  }
+
   {
     uint8_t  Raw[4] = { 0 };
-    int      R      = geni_i2c_read (&mI2c, S3908_ADDR, Raw, 4);
+    int      R      = I2cRead (&mI2c, Raw, 4);
 
     Log ("Touch chip: %a [%d] data %02x %02x %02x %02x\n", I2cText (R), R, Raw[0], Raw[1], Raw[2], Raw[3]);
     Log ("geni status 0x%x m_irq 0x%x ios 0x%x\n", geni_rd (&mI2c, SE_GENI_STATUS), geni_rd (&mI2c, SE_GENI_M_IRQ_STATUS), geni_rd (&mI2c, SE_GENI_IOS));
@@ -255,6 +290,10 @@ Probe (
   Rc = tcm_get_report_config (&mTcm, Wait1ms);
   Log ("Touch report config: %a [%d, %u bytes]\n", Rc == 0 ? "OK" : "FAILED", Rc, mTcm.config_len);
   Log ("Interrupt line: %a\n", tlmm_in (Tlmm, NT_PIN_IRQ) ? "idle (high)" : "message waiting (low)");
+  if (mUseGpi) {
+    Log ("GPI last event: %08x %08x %08x %08x\n", mGpi.last_ev[0], mGpi.last_ev[1], mGpi.last_ev[2], mGpi.last_ev[3]);
+    gpi_release (&mGpi);   // the OS driver brings up its own GPII
+  }
 }
 
 STATIC
