@@ -81,6 +81,9 @@ jobs:
       - name: Configure and fetch
         working-directory: ${{ runner.temp }}/UniXNU
         run: |
+          # sheng's TouchProbe (compiled into the legacy display archive, inactive without sheng-touch args) includes
+          # NativeNovatekTouch headers; the driver is not part of this repository's copy of the sheng device repo
+          git clone -q --depth 1 https://github.com/UniXNU/NativeNovatekTouch.git "$GITHUB_WORKSPACE/unixnu-negroni/drivers/NativeNovatekTouch"
           ./unixnu defconfig negroni_defconfig -D "$GITHUB_WORKSPACE/unixnu-negroni"
           ./unixnu fetch
           ./unixnu status
