@@ -43,7 +43,7 @@ while i<len(args):
  elif v=='-Xclang' and args[i+1].startswith('-W'):i+=1
  elif not v.startswith('-W'):cmd.append(v)
  i+=1
-cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')];run(cmd,cwd=record['directory'])
+cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')];run(cmd,cwd=record['directory'])
 original_source=ROOT/'kits/sheng/OriginalGPUClientABIProbe.cpp';original_cmd=[str(v).replace(str(source),str(original_source)).replace(str(OUT/'AcceleratorABIProbe.o'),str(OUT/'OriginalGPUClientABIProbe.o')) for v in cmd];run(original_cmd,cwd=record['directory'])
 archive=OUT/'libNativeOfflineAccelerator.late.a';archive.unlink(missing_ok=True);run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'AcceleratorABIProbe.o',OUT/'OriginalGPUClientABIProbe.o'])
 sources=[ROOT/'drivers/NativeMetal/NativeOfflineAccelerator.cpp',ROOT/'drivers/NativeMetal/OriginalAcceleratorABI.h',source,original_source]

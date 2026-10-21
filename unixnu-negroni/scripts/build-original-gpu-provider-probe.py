@@ -57,7 +57,7 @@ while i<len(args):
  elif v=='-Xclang' and args[i+1].startswith('-W'):i+=1
  elif not v.startswith('-W'):cmd.append(v)
  i+=1
-cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')];run(cmd,cwd=record['directory'])
+cmd+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')];run(cmd,cwd=record['directory'])
 archive=OUT/'libNativeIOGPUProviderProbe.late.a';archive.unlink(missing_ok=True);run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'OriginalGPUProviderProbe.o'])
 sources=[source,*(ROOT/'drivers/NativeMetal'/name for name in ('OriginalGPUProviderABI.h','OriginalAcceleratorABI.h','NativeIOGPUProviderProbe.cpp'))]
 (OUT/'build-report.json').write_text(json.dumps(dict(source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources},archive_sha256=sha(archive),abi_sha256=sha(abi),bindings={name:hex(va) for name,va in bindings.items()},virtual_entries=215,own_entries=owned,vtable_source_symbols=entries,pure_source_signatures_qualified=False,original_methods_modified=False,normal_publication_blocked=True,runtime_qualified=False,original_desktop=False,adreno_execution=False),indent=2)+'\n')

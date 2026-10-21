@@ -30,7 +30,7 @@ while i<len(args):
     elif value=='-Xclang' and args[i+1].startswith('-W'):i+=1
     elif not value.startswith('-W'):command.append(value)
     i+=1
-command+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')]
+command+=['-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier','-Wno-c99-designator','-Wno-reorder-init-list','-Wno-deprecated-enum-enum-conversion','-I',str(ROOT/'.cache/xnu-work/osfmk')]
 command+=['-DNATIVE_ACCELERATOR_ABI_PROBE='+str(int(options.accelerator_abi)),'-DNATIVE_PROVIDER_ABI_PROBE='+str(int(options.provider_probe))]
 run(command,cwd=record['directory'])
 archive=OUT/'libNativeOfflineGPU.late.a';archive.unlink(missing_ok=True)

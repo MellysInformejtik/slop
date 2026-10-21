@@ -42,7 +42,7 @@ for source in sources:
                 '-I', str(ROOT / 'drivers/NativeAdreno'), '-Wall', '-Wextra', '-Werror',
                 '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
-                '-Wno-unnecessary-virtual-specifier']
+                '-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier']
     result = subprocess.run(command, cwd=recipe['directory'], capture_output=True, text=True)
     if result.returncode:
         sys.exit(str(source) + ':\n' + result.stderr[-2500:])

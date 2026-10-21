@@ -335,7 +335,7 @@ service_cmd += ['-I', str(service_xnu / 'osfmk'), '-I', str(kit), '-I', str(smmu
                 *(['-I', str(ROOT / 'build/sheng-gmu')] if (ROOT / 'build/sheng-gmu/ShengGmuSource.h').exists() else []),
                 '-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-incompatible-sysroot',
                 '-Wno-c99-designator', '-Wno-reorder-init-list',
-                '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier']
+                '-Wno-deprecated-enum-enum-conversion', '-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier']
 service_compile = subprocess.run(service_cmd, cwd=service_recipe['directory'],
                                  capture_output=True, text=True, timeout=120)
 (out / 'service.log').write_text(service_compile.stdout + service_compile.stderr)
@@ -580,7 +580,7 @@ while index < len(record['arguments']):
 base += ['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
          '-Wno-incompatible-sysroot',
          '-Wno-c99-designator', '-Wno-reorder-init-list',
-         '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier',
+         '-Wno-deprecated-enum-enum-conversion', '-Wno-unknown-warning-option', '-Wno-unnecessary-virtual-specifier',
          '-mgeneral-regs-only', '-I', str(xnu / 'osfmk'), '-I', str(smmu),
          '-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/sheng'),
          '-I', str(ROOT / 'kits/AdrenoFirmware')]
