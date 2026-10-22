@@ -1,0 +1,51 @@
+; Stage-0 ACPI resource-validation driver. Not a display or acceleration driver.
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderName%
+CatalogFile = NegroniGpuProbe.cat
+DriverVer   = 10/22/2026,0.1.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+NegroniGpuProbe.sys = 1
+
+[Manufacturer]
+%ProviderName% = Negroni, NTARM64
+
+[Negroni.NTARM64]
+%DeviceDesc% = NegroniGpuProbe_Install, ACPI\QCOM0A73
+
+[NegroniGpuProbe_Install.NT]
+CopyFiles = NegroniGpuProbe_CopyFiles
+
+[NegroniGpuProbe_CopyFiles]
+NegroniGpuProbe.sys
+
+[NegroniGpuProbe_Install.NT.Services]
+AddService = NegroniGpuProbe, 0x00000002, NegroniGpuProbe_Service
+
+[NegroniGpuProbe_Service]
+DisplayName   = %DeviceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %13%\NegroniGpuProbe.sys
+
+[NegroniGpuProbe_Install.NT.Wdf]
+KmdfService = NegroniGpuProbe, NegroniGpuProbe_Wdf
+
+[NegroniGpuProbe_Wdf]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+ProviderName = "ios-sweet"
+DiskName     = "NegroniGpuProbe"
+DeviceDesc   = "Negroni Adreno 730 resource probe (no GPU access)"

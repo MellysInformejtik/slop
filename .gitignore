@@ -7,6 +7,7 @@ research/
 shim/out/
 xnu/out/
 xnu/out-*/
+windows/NegroniGpu/out/
 __pycache__/
 unixnu-negroni/.cache/
 unixnu-negroni/unixnu.lock

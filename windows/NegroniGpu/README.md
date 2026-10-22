@@ -42,6 +42,20 @@ Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
 private firmware dumps out of git.
 
+## Current implementation checkpoint
+
+`uefi/negroni/acpi/GpuSsdt.asl` describes an experimental `QCOM0A73`
+platform device and its eight MMIO windows. The ranges match the Negroni
+SM8450 DTB and the XNU A730 bring-up sources. `windows/NegroniGpu/NegroniGpuProbe.c`
+is a native ARM64 KMDF resource-validation probe: it checks those translated
+addresses and lengths without mapping registers, requesting power, or changing
+display ownership. It built successfully with the installed WDK. It is not a
+WDDM miniport and provides no graphics acceleration. Its INF is not staged or
+installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
+verified. Before any build/boot, compile the AML and inspect the firmware table
+list to confirm this SSDT coexists with `TouchSsdt` and the existing display
+path.
+
 ## References
 
 - [Microsoft WDDM operation flow](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/windows-vista-and-later-display-driver-model-operation-flow)
