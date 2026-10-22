@@ -5,13 +5,14 @@
 #   - the OnePlus touch driver (NegroniTouch) and key driver (NegroniKeys: power, volume), test-signed catalogs
 #
 # Administrator PowerShell:
-#   .\prepare-negroni-windows.ps1 -Windows X: -Efi Y:
+#   .\prepare-negroni-windows.ps1 -Windows X: -Efi Y: [-Cpus 4]
 # -Windows: the phone's Windows partition (has \Windows\System32), -Efi: its EFI partition (has \EFI\Microsoft\Boot\BCD)
 param(
     [Parameter(Mandatory)][string]$Windows,
     [Parameter(Mandatory)][string]$Efi,
     [string]$Driver = (Join-Path $PSScriptRoot 'NegroniTouch\out\v4-catalog'),
-    [string]$KeysDriver = (Join-Path $PSScriptRoot 'NegroniKeys\out\pkg')
+    [string]$KeysDriver = (Join-Path $PSScriptRoot 'NegroniKeys\out\pkg'),
+    [int]$Cpus = 8      # 8: all cores; 4: only the four small cores (older builds blue-screen with 0x3E on all 8)
 )
 $ErrorActionPreference = 'Stop'
 $Windows = $Windows.TrimEnd('\'); $Efi = $Efi.TrimEnd('\')
@@ -36,7 +37,12 @@ Write-Host '== test signing'
 $entries = bcdedit /store $bcd /enum osloader
 bcdedit /store $bcd /set '{default}' testsigning on
 bcdedit /store $bcd /set '{default}' nointegritychecks on
-bcdedit /store $bcd /enum '{default}' | Select-String 'testsigning|nointegritychecks|device|path'
+if ($Cpus -ge 8) {
+    bcdedit /store $bcd /deletevalue '{default}' numproc 2>$null | Out-Null
+} else {
+    bcdedit /store $bcd /set '{default}' numproc $Cpus
+}
+bcdedit /store $bcd /enum '{default}' | Select-String 'testsigning|nointegritychecks|numproc|device|path'
 
 Write-Host '== touch driver'
 Get-ChildItem $Driver -Filter *.cer | ForEach-Object {

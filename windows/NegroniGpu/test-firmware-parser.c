@@ -2,6 +2,7 @@
 #include "NegroniGpuFirmware.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void
@@ -96,11 +97,77 @@ TestZap(void)
     assert(image.SegmentCount == 0); /* failed parse clears output */
 }
 
+static uint8_t *
+ReadFile(const char *path, size_t *length)
+{
+    FILE *file = fopen(path, "rb");
+    long size;
+    uint8_t *data;
+    if (file == NULL || fseek(file, 0, SEEK_END) != 0 ||
+        (size = ftell(file)) <= 0 || fseek(file, 0, SEEK_SET) != 0) {
+        if (file != NULL)
+            fclose(file);
+        return NULL;
+    }
+    data = (uint8_t *)malloc((size_t)size);
+    if (data == NULL || fread(data, 1, (size_t)size, file) != (size_t)size) {
+        free(data);
+        fclose(file);
+        return NULL;
+    }
+    fclose(file);
+    *length = (size_t)size;
+    return data;
+}
+
+static void
+TestPhoneFirmware(const char *directory)
+{
+    char path[1024];
+    uint8_t *data;
+    size_t length, blockCount = 0;
+    NG_GMU_FW_BLOCK blocks[NG_GMU_FW_MAX_BLOCKS];
+    NG_ZAP_FW_IMAGE zap;
+
+    assert(snprintf(path, sizeof(path), "%s/gmu_gen70000.bin", directory) > 0);
+    data = ReadFile(path, &length);
+    assert(data != NULL);
+    assert(NgParseGmuFirmware(data, length, blocks, NG_GMU_FW_MAX_BLOCKS,
+                              &blockCount));
+    printf("Target GMU firmware: %zu bytes, %zu valid blocks\n", length, blockCount);
+    free(data);
+
+    assert(snprintf(path, sizeof(path), "%s/a730_zap.mdt", directory) > 0);
+    data = ReadFile(path, &length);
+    assert(data != NULL);
+    assert(NgParseZapManifest(data, length, &zap));
+    for (size_t i = 0; i < zap.SegmentCount; ++i) {
+        char segmentPath[1024];
+        size_t segmentLength;
+        uint32_t offset = zap.Segments[i].PhysicalAddress - zap.LowestAddress;
+        assert(offset <= zap.SpanSize &&
+               zap.Segments[i].MemorySize <= zap.SpanSize - offset);
+        assert(snprintf(segmentPath, sizeof(segmentPath),
+                        "%s/a730_zap.b%02u", directory,
+                        zap.Segments[i].Index) > 0);
+        uint8_t *segment = ReadFile(segmentPath, &segmentLength);
+        assert(segment != NULL && segmentLength >= zap.Segments[i].FileSize);
+        free(segment);
+    }
+    printf("Target ZAP manifest: %zu bytes, %u load segments, span %#x\n",
+           length, zap.SegmentCount, zap.SpanSize);
+    free(data);
+}
+
 int
-main(void)
+main(int argc, char **argv)
 {
     TestGmu();
     TestZap();
+    if (argc == 2)
+        TestPhoneFirmware(argv[1]);
+    else
+        assert(argc == 1);
     puts("A730 firmware parser tests passed");
     return 0;
 }
