@@ -87,8 +87,16 @@ packets, including the odd-parity fields confirmed in the XNU CP bring-up. Its
 host tests check exact CP_ME_INIT and type-4 headers, parity, payload copies,
 and rejection of invalid opcodes/registers and undersized output. It is linked
 into the ARM64 prototype but is not yet connected to a command ring or WDDM
-submission DDI. Run `test-host.sh` in WSL; it runs both this suite and the
-firmware parser tests under ASan/UBSan against the local phone blobs.
+submission DDI. Run `test-host.sh` in WSL; it runs the PM4, queue, and firmware
+parser suites under ASan/UBSan against the local phone blobs.
+
+`NegroniGpuQueue.c` adds CPU-only ring accounting (single-empty-slot capacity,
+wrap-safe writes, and modulo hardware-RPTR reconciliation) plus monotonic fence
+issue/completion bookkeeping. The helper is explicitly caller-serialized and
+does not access MMIO or synchronize against real Dxgkrnl callbacks yet. Host
+tests cover wrap, overrun, invalid/future RPTR, and fence ordering. It is linked
+into the prototype but is not yet used by `DxgkDdiSubmitCommand` or an interrupt
+routine.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
