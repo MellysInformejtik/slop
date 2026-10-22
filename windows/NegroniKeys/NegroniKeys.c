@@ -8,9 +8,11 @@
  *   volume up / down   Consumer Control Volume Increment / Decrement (with auto-repeat)
  *   power              Generic Desktop System Sleep (display off / on)
  *
- * ACPI device NEGK0001 (negroni SSDT):
- *   0: SPMI arbiter core 0x0C400000, 0x3000 (version, APID map)
- *   1: observer channels 0x0C440000, 0x8000 (EE 0)
+ * ACPI device NEGK0001 (negroni SSDT) has no resources: the SPMI arbiter range belongs to the
+ * DSDT's SPMI device (a second claim is a resource conflict, code 12), so the two windows are
+ * mapped by address; they are only read:
+ *   SPMI arbiter core 0x0C400000, 0x3000 (version, APID map)
+ *   observer channels 0x0C440000, 0x8000 (EE 0)
  */
 #include <ntddk.h>
 #include <wdf.h>
@@ -19,6 +21,10 @@
 
 #include "negroni_spmi_keys.h"
 
+#define SPMI_CORE_PA		0x0C400000ULL
+#define SPMI_CORE_LEN		0x3000
+#define SPMI_OBS_PA		0x0C440000ULL
+#define SPMI_OBS_LEN		0x8000
 #define POLL_MS			20
 #define REPEAT_DELAY		20	/* polls before a held volume key repeats (400 ms) */
 #define REPEAT_PERIOD		4	/* then every 80 ms */
@@ -141,34 +147,19 @@ NTSTATUS NkDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 NTSTATUS NkPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
 {
 	NK_CONTEXT *ctx = NkGetContext(Device);
-	ULONG n = WdfCmResourceListGetCount(Translated), mem = 0;
+	PHYSICAL_ADDRESS pa;
 
 	UNREFERENCED_PARAMETER(Raw);
-	for (ULONG i = 0; i < n; i++) {
-		PCM_PARTIAL_RESOURCE_DESCRIPTOR d = WdfCmResourceListGetDescriptor(Translated, i);
-		PVOID va;
-
-		if (d->Type != CmResourceTypeMemory)
-			continue;
-		va = MmMapIoSpaceEx(d->u.Memory.Start, d->u.Memory.Length, PAGE_READWRITE | PAGE_NOCACHE);
-		if (!va) {
-			NkTrace(4, STATUS_INSUFFICIENT_RESOURCES, mem);
-			return STATUS_INSUFFICIENT_RESOURCES;
-		}
-		if (mem == 0) {
-			ctx->Core = va;
-			ctx->CoreLength = d->u.Memory.Length;
-		} else if (mem == 1) {
-			ctx->Obs = va;
-			ctx->ObsLength = d->u.Memory.Length;
-		} else {
-			MmUnmapIoSpace(va, d->u.Memory.Length);
-		}
-		mem++;
-	}
+	UNREFERENCED_PARAMETER(Translated);
+	pa.QuadPart = SPMI_CORE_PA;
+	ctx->Core = MmMapIoSpaceEx(pa, SPMI_CORE_LEN, PAGE_READWRITE | PAGE_NOCACHE);
+	ctx->CoreLength = SPMI_CORE_LEN;
+	pa.QuadPart = SPMI_OBS_PA;
+	ctx->Obs = MmMapIoSpaceEx(pa, SPMI_OBS_LEN, PAGE_READWRITE | PAGE_NOCACHE);
+	ctx->ObsLength = SPMI_OBS_LEN;
 	if (!ctx->Core || !ctx->Obs) {
-		NkTrace(4, STATUS_DEVICE_CONFIGURATION_ERROR, mem);
-		return STATUS_DEVICE_CONFIGURATION_ERROR;
+		NkTrace(4, STATUS_INSUFFICIENT_RESOURCES, (ctx->Core ? 1 : 0) | (ctx->Obs ? 2 : 0));
+		return STATUS_INSUFFICIENT_RESOURCES;
 	}
 	ctx->Arb.core = (volatile uint32_t *)ctx->Core;
 	ctx->Arb.obs = (volatile uint32_t *)ctx->Obs;
