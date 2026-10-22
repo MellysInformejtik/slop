@@ -17,8 +17,8 @@ index 0000000..7b6dd9b
 +++ b/bsd/dev/negroni_adreno.c
 @@ -0,0 +1,154 @@
 +/*
-+ * NEGRONI (SM8450) Adreno 730, woken step by step, after HackiOS
-+ * redwood_adreno.c (MIT): an access the hypervisor does not allow can end
++ * NEGRONI (SM8450) Adreno 730, woken step by step (Linux msm a6xx/a7xx as the
++ * reference): an access the hypervisor does not allow can end
 + * the run without a word, so each step says what it is about to touch
 + * before touching it, reads come before writes, and a step that does not
 + * find what it needs ends the ladder.

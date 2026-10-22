@@ -2,7 +2,7 @@
 # Put Procursus (rootless 1800) + Sileo into the negroni iOS 16 root IMAGE before it is pushed to userdata
 # (OrangeFox has no hfsplus, so the root cannot be edited on the phone). Layout as a rootless jailbreak:
 # /private/preboot/procursus with /private/var/jb -> it (LaunchServices registers apps from there, not from
-# /private/var; HackiOS userland/src/init.c). A launchd job com.negroni.jbprep runs the bootstrap's
+# /private/var). A launchd job com.negroni.jbprep runs the bootstrap's
 # preparation once and registers Sileo.app with uicache at every boot. Also drops the bluetoothd and
 # fairplayd jobs, which crash-loop here (no Bluetooth, no SEP).
 #

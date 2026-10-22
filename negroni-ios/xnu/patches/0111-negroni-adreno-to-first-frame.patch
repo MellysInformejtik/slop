@@ -56,7 +56,7 @@ index ed22e56..2115af8 100644
 +}
 +
 +
-+/* ---- steps 19-22: the 3D core's memory, start, zap, first work (HackiOS steps 18-22; Linux a6xx_gpu.c) ---- */
++/* ---- steps 19-22: the 3D core's memory, start, zap, first work (Linux a6xx_gpu.c) ---- */
 +
 +#define GPU_WORD(dw)            (4 * (vm_offset_t)(dw))
 +#define PTE_UNPRIVILEGED        (1ull << 6)
@@ -416,7 +416,7 @@ index ed22e56..2115af8 100644
 +	return word == 0x600dc0de;
 +}
 +
-+/* The 2D engine fills rectangles (Mesa fd6_clear_surface; HackiOS step 22), sysmem, BGRA linear. */
++/* The 2D engine fills rectangles (Mesa fd6_clear_surface), sysmem, BGRA linear. */
 +#define REG_GRAS_2D_BLIT_CNTL   0x8400
 +#define REG_GRAS_2D_DST_TL      0x8405
 +#define REG_GRAS_2D_DST_BR      0x8406

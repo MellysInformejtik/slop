@@ -30,7 +30,7 @@ index 170271d..05e5485 100644
  }
  
 +
-+/* ---- memory the GPU block reaches through the adreno SMMU (HackiOS redwood_adreno.c; Linux io-pgtable-arm.c) ---- */
++/* ---- memory the GPU block reaches through the adreno SMMU (Linux io-pgtable-arm.c, arm-smmu.c) ---- */
 +
 +#define PTE_TABLE               3ull
 +#define PTE_PAGE                3ull

@@ -2,7 +2,7 @@
 # Install Procursus (rootless, 1800) + Sileo into the negroni iOS 16 root on userdata, from OrangeFox.
 # Adds files only; userdata is not reformatted. Layout as on an iPhone with a rootless jailbreak:
 # the prefix lives in /private/preboot/procursus and /var/jb links to it (LaunchServices does not
-# register applications from /private/var, see HackiOS userland/src/init.c). A launchd job
+# register applications from /private/var). A launchd job
 # (com.negroni.jbprep) runs the bootstrap's first-boot preparation once and registers Sileo.app
 # with uicache at every boot.
 #

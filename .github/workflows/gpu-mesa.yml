@@ -1,10 +1,10 @@
 name: gpu-mesa
 
-# Mesa (OpenGL ES + freedreno) for the negroni iOS 16 userland, the HackiOS way: Mesa 25.0.7 with
-# HackiOS's patches (freedreno on Darwin through the redwood-drm libdrm stand-in, the AIR frontend),
+# Mesa (OpenGL ES + freedreno) for the negroni iOS 16 userland, for the iOS 16 userland: Mesa 25.0.7 with
+# the freedreno-on-Darwin patches (freedreno on Darwin through a libdrm stand-in, the AIR frontend),
 # cross-built with Xcode's clang against the runner's iPhoneOS SDK for a minimum of iOS 16.0.
 # Output: libOSMesa.8.dylib (+ exported-gl.txt, gl.xml) and, with AIR, libredwoodair.dylib / air_run.
-# Only Mesa and HackiOS sources (MIT) go in; nothing from Apple is in the artifact.
+# Only Mesa and the patch sources (MIT) go in; nothing from Apple is in the artifact.
 
 on:
   workflow_dispatch:
@@ -24,8 +24,8 @@ on:
 env:
   MESA_VERSION: 25.0.7
   MESA_SHA256: 592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
-  HACKIOS_USERLAND: https://github.com/oosexgang/hackios-xnu-userland.git
-  HACKIOS_COMMIT: 906425b75e02b4f99eb5d7bb1ef7c9583472d772
+  PATCHES_REPO: https://github.com/oosexgang/hackios-xnu-userland.git
+  PATCHES_COMMIT: 906425b75e02b4f99eb5d7bb1ef7c9583472d772
   IOS_MIN: "16.0"
 
 jobs:
@@ -47,19 +47,19 @@ jobs:
       - name: Sources (pinned)
         run: |
           cd "$RUNNER_TEMP"
-          git clone -q "$HACKIOS_USERLAND" hackios
-          git -C hackios checkout -q "$HACKIOS_COMMIT"
+          git clone -q "$PATCHES_REPO" patches
+          git -C patches checkout -q "$PATCHES_COMMIT"
           curl -sL --fail -o mesa.tar.xz "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
           echo "$MESA_SHA256  mesa.tar.xz" | shasum -a 256 -c
           tar xJf mesa.tar.xz
           M=mesa-$MESA_VERSION
-          for p in hackios/tools/mesa/*.patch; do
+          for p in patches/tools/mesa/*.patch; do
             echo "patch $(basename "$p")"
             patch -s --no-backup-if-mismatch -d "$M" -p1 < "$p"
           done
-          cp -r hackios/tools/mesa/redwood-drm "$M/src/redwood-drm"
+          cp -r patches/tools/mesa/redwood-drm "$M/src/redwood-drm"
           rm -rf "$M/src/compiler/air"
-          cp -r hackios/tools/mesa/air "$M/src/compiler/air"
+          cp -r patches/tools/mesa/air "$M/src/compiler/air"
 
       - name: Configure
         run: |
@@ -119,7 +119,7 @@ jobs:
             install_name_tool -id /redwood/lib/libredwoodair.dylib out/libredwoodair.dylib
           fi
           # what it was built from
-          { echo "mesa $MESA_VERSION $MESA_SHA256"; echo "hackios-xnu-userland $HACKIOS_COMMIT";
+          { echo "mesa $MESA_VERSION $MESA_SHA256"; echo "patches $PATCHES_COMMIT";
             echo "sdk $(xcrun --sdk iphoneos --show-sdk-version), min iOS $IOS_MIN"; } > out/BUILT-FROM
           otool -l out/libOSMesa.8.dylib | grep -A4 LC_BUILD_VERSION | head -8
           ls -l out; (cd out && shasum -a 256 * > SHA256SUMS)

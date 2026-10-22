@@ -64,8 +64,8 @@ index 0000000..a068ce9
 @@ -0,0 +1,178 @@
 +/*
 + * NEGRONI (SM8450) Wi-Fi: QCA6490 (ath11k "WCN6855 hw2.1") on PCIe0, brought
-+ * up step by step like negroni_adreno.c (after HackiOS redwood_wifi.c, MIT,
-+ * whose WCN6750 sits on the SoC instead). Steps 1-4 only read.
++ * up step by step like negroni_adreno.c (Linux ath11k/MHI as the reference;
++ * the chip sits on PCIe0). Steps 1-4 only read.
 + *
 + * Boot arg negroniwifi=N performs steps 1..N (default 0: nothing).
 + *   1  reads   GCC PCIe0: the GDSC and the branches (AUX, CFG AHB, MSTR/SLV AXI, PIPE)

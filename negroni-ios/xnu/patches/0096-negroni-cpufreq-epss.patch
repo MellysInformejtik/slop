@@ -23,8 +23,8 @@ index 0000000..ec07107
 + * switches clock source and voltage itself when told which row is wanted.
 + * The hardware limits management (LMh) still throttles on its own when the
 + * die gets hot. Layout: Linux drivers/cpufreq/qcom-cpufreq-hw.c (epss),
-+ * addresses: sm8450.dtsi cpufreq@17d91000. Same approach as HackiOS
-+ * redwood_cpufreq.c (MIT).
++ * addresses: sm8450.dtsi cpufreq@17d91000. Ported for negroni from the
++ * Linux qcom-cpufreq-hw EPSS layout.
 + *
 + * Boot args: negronicpufreq=0 leaves the clocks alone; negronicpufreq_mhz=N
 + * caps each domain at the highest row not above N MHz (default 2400).

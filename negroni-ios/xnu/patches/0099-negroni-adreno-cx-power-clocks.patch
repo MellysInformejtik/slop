@@ -283,7 +283,7 @@ index 7b6dd9b..df96d03 100644
 +	}
 +	printf("NEGRONI ADRENO: 4 CX is on (%#x)\n", rd(gpucc + GPUCC_CX_GDSCR));
 +	if (rd(gpucc + GPUCC_GX_GDSCR) & GDSC_PWR_ON) {
-+		/* HackiOS: a GX left on by an earlier run does not take commands, and switching it off hung the phone. */
++		/* A GX left on by an earlier run does not take commands, and switching it off hung the phone. */
 +		printf("NEGRONI ADRENO: 4 stop: GX already has power (left by an earlier run): restart the phone\n");
 +		return false;
 +	}

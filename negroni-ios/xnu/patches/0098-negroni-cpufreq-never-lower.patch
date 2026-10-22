@@ -3,7 +3,7 @@ index ec07107..5cef207 100644
 --- a/bsd/dev/negroni_cpufreq.c
 +++ b/bsd/dev/negroni_cpufreq.c
 @@ -9,7 +9,9 @@
-  * redwood_cpufreq.c (MIT).
+  * Linux qcom-cpufreq-hw EPSS layout.
   *
   * Boot args: negronicpufreq=0 leaves the clocks alone; negronicpufreq_mhz=N
 - * caps each domain at the highest row not above N MHz (default 2400).
