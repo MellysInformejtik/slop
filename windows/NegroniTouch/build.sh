@@ -15,7 +15,9 @@ clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
 # WDF_TYPE_DEFAULT_SECTION_NAME: clang marks WDF's const context-type record read-only, so in .data it
 # became a second, read-only .data section and the kernel refused to load the image (0xC0000018).
 # libcntpr: the kernel CRT pieces vhfkm.lib (built with MSVC) expects (_Interlocked*, __security_push/pop_cookie)
+# /BASE and /TSAWARE:NO: kernel-driver base (as Microsoft's ARM64 drivers) instead of lld's program defaults.
 lld-link /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:FxDriverEntry /MACHINE:ARM64 /NODEFAULTLIB /INTEGRITYCHECK \
+	/BASE:0x1C0000000 /TSAWARE:NO /STACK:0x40000 \
 	/OUT:out/NegroniTouch.sys out/NegroniTouch.obj "$W/WdfDriverEntry.lib" "$W/WdfLdr.lib" \
 	"$L/ntoskrnl.lib" "$L/hal.lib" "$L/wmilib.lib" "$L/BufferOverflowFastFailK.lib" "$L/vhfkm.lib" "$L/libcntpr.lib"
 ls -l out/NegroniTouch.sys
