@@ -711,3 +711,8 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Added ASan/UBSan tests for wraparound, capacity rejection, invalid and future RPTR values, unchanged pointer handling, and monotonic fences. `test-host.sh` passes PM4, ring/fence, and real firmware parser suites.
 - ARM64 KMD prototype rebuild passed, PE machine ARM64, SYS SHA256 `d15de3a4e0046b82d45e90c06d2a1ee40f6374ff648fbc130e09493cc1777484`. Offline package regenerated and Inf2Cat passed with no warnings/errors; package SYS hash matches the build. Still DO NOT INSTALL, no device test or flash.
 - Next: connect these primitives to documented WDDM submit/completion/interrupt callback contracts, implement bounds-checked GPU command-buffer validation and interrupt-safe completion, then develop real memory/SMMU and TrustZone paths. The helpers alone do not submit hardware work.
+
+## 2026-10-22 Windows default boot
+- Mu fork b474353a: NegroniWindowsFirstDxe (protocol notify on SimpleFileSystem) puts a "Windows Boot Manager"
+  Boot#### (\EFI\Microsoft\Boot\bootmgfw.efi) first in BootOrder; UniXNU stays in the boot menu.
+- Image ~/ios-work/winpe/boot_a-windows-keys.img (sha bcdf4e17…) also has NEGK0001 without _CRS. Not yet flashed/tested.
