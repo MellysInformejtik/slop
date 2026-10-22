@@ -1,6 +1,7 @@
 # Negroni Adreno 730 for Windows ARM64
 
-Status: source audit complete; no Windows GPU driver has been built or installed.
+Status: experimental ACPI source and incomplete WDDM miniport prototype built;
+no usable Windows GPU driver has been built or installed.
 
 Target: Windows 11 ARM64 23H2 (22631.7584) on the OnePlus 10 Pro, SM8450,
 Adreno 730. The current Windows install has only the NegroniTouch package
@@ -23,9 +24,9 @@ staged; this project does not change the phone or its Windows image.
   power/clock, TrustZone firmware authentication, GMU/HFI, and command
   processor progress. Those results are a hardware reference, not a Windows
   driver.
-- The current `uefi/` source has no Negroni GPU ACPI device/resource node. A
-  Windows driver will need a safe way to receive and map the SM8450 GPU, GMU,
-  GPU-CC, SMMU, and interrupt resources.
+- `uefi/negroni/acpi/GpuSsdt.asl` now declares a Negroni GPU ACPI node and MMIO
+  ranges. The ASL compiled, but the complete firmware build, resource
+  arbitration/translation, and interrupt mapping have not been validated.
 
 ## Port milestones
 
@@ -54,9 +55,12 @@ only compute.
 The real KMD must use `DRIVER_INITIALIZATION_DATA`/`DxgkInitialize` and implement
 the render-specific WDDM DDIs, including allocation, paging, context, command
 submission, interrupt/fence, reset, and timeout paths. The UMD must speak the
-Windows D3D runtime ABI and submit work through that KMD. No such KMD or UMD has
-been implemented yet; the next coding step is a separate render-only miniport
-project, not expansion of the KMDF probe.
+Windows D3D runtime ABI and submit work through that KMD. An early, deliberately
+incomplete `DRIVER_INITIALIZATION_DATA` prototype now validates/maps the MMIO
+resources through Dxgkrnl without accessing registers. It only registers
+AddDevice/StartDevice/StopDevice/RemoveDevice; it is not a loadable or usable
+WDDM adapter and is not staged or installed. The next KMD work is to implement
+query/capability and render DDIs before hardware initialization.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
@@ -65,15 +69,20 @@ private firmware dumps out of git.
 ## Current implementation checkpoint
 
 `uefi/negroni/acpi/GpuSsdt.asl` describes an experimental `QCOM0A73`
-platform device and its eight MMIO windows. The ranges match the Negroni
+platform device and its six non-overlapping MMIO windows. The ranges match the Negroni
 SM8450 DTB and the XNU A730 bring-up sources. `windows/NegroniGpu/NegroniGpuProbe.c`
 is a native ARM64 KMDF resource-validation probe: it checks those translated
 addresses and lengths without mapping registers, requesting power, or changing
-display ownership. It built successfully with the installed WDK. It is not a
-WDDM miniport and provides no graphics acceleration. Its INF is not staged or
-installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
-verified. `GpuSsdt.asl` compiled cleanly with ACPICA iasl 20251212 (191-byte
-AML, no diagnostics). The full UEFI build and firmware-table coexistence with
+display ownership. `NegroniGpuWddm.c` is an incomplete render-only WDDM miniport
+prototype that obtains the translated resources using `DxgkCbGetDeviceInformation`
+and maps them using `DxgkCbMapMemory`; it performs no register access and has no
+render DDIs. Both binaries compile for ARM64 with the installed WDK, but neither
+is staged or installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
+verified. `GpuSsdt.asl` compiled cleanly with ACPICA iasl 20251212 (latest
+six-window AML is 167 bytes, no diagnostics). GPU-CC (0x03d90000/0xa000) and
+CX-misc (0x03d9e000/0x1000) are subranges inside the DTB GMU aperture
+0x03d6a000/0x35000 and are accessed as offsets within that single mapping,
+avoiding duplicate overlapping PnP descriptors. The full UEFI build and firmware-table coexistence with
 `TouchSsdt` and the existing display path still need validation before boot.
 
 ## References
