@@ -721,4 +721,4 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 ## 2026-10-22 Windows default boot
 - Mu fork b474353a: NegroniWindowsFirstDxe (protocol notify on SimpleFileSystem) puts a "Windows Boot Manager"
   Boot#### (\EFI\Microsoft\Boot\bootmgfw.efi) first in BootOrder; UniXNU stays in the boot menu.
-- Image ~/ios-work/winpe/boot_a-windows-keys.img (sha bcdf4e17…) also has NEGK0001 without _CRS. Not yet flashed/tested.
+- Mu fork: UsbPwrCtrlDxe + UsbConfigDxe re-added (were lost, mass storage broke). Image boot_a-windows-keys.img rebuilt; untested.
