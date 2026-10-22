@@ -1,0 +1,135 @@
+name: gpu-mesa
+
+# Mesa (OpenGL ES + freedreno) for the negroni iOS 16 userland, the HackiOS way: Mesa 25.0.7 with
+# HackiOS's patches (freedreno on Darwin through the redwood-drm libdrm stand-in, the AIR frontend),
+# cross-built with Xcode's clang against the runner's iPhoneOS SDK for a minimum of iOS 16.0.
+# Output: libOSMesa.8.dylib (+ exported-gl.txt, gl.xml) and, with AIR, libredwoodair.dylib / air_run.
+# Only Mesa and HackiOS sources (MIT) go in; nothing from Apple is in the artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      drivers:
+        description: gallium drivers
+        default: softpipe,freedreno
+      air:
+        description: also build the AIR (Metal shader) library and air_run
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gpu-mesa.yml"
+
+env:
+  MESA_VERSION: 25.0.7
+  MESA_SHA256: 592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
+  HACKIOS_USERLAND: https://github.com/oosexgang/hackios-xnu-userland.git
+  HACKIOS_COMMIT: 906425b75e02b4f99eb5d7bb1ef7c9583472d772
+  IOS_MIN: "16.0"
+
+jobs:
+  mesa:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Tools
+        run: |
+          brew install meson ninja llvm
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" -q install mako pyyaml packaging
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Sources (pinned)
+        run: |
+          cd "$RUNNER_TEMP"
+          git clone -q "$HACKIOS_USERLAND" hackios
+          git -C hackios checkout -q "$HACKIOS_COMMIT"
+          curl -sL --fail -o mesa.tar.xz "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
+          echo "$MESA_SHA256  mesa.tar.xz" | shasum -a 256 -c
+          tar xJf mesa.tar.xz
+          M=mesa-$MESA_VERSION
+          for p in hackios/tools/mesa/*.patch; do
+            echo "patch $(basename "$p")"
+            patch -s --no-backup-if-mismatch -d "$M" -p1 < "$p"
+          done
+          cp -r hackios/tools/mesa/redwood-drm "$M/src/redwood-drm"
+          rm -rf "$M/src/compiler/air"
+          cp -r hackios/tools/mesa/air "$M/src/compiler/air"
+
+      - name: Configure
+        run: |
+          cd "$RUNNER_TEMP"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC=$(xcrun --sdk iphoneos -f clang)
+          CXX=$(xcrun --sdk iphoneos -f clang++)
+          T="-target arm64-apple-ios$IOS_MIN"
+          LLVM=$(brew --prefix llvm)/bin
+          cat > cross.ini <<INI
+          [binaries]
+          c = ['$CC', '-arch', 'arm64', '-target', 'arm64-apple-ios$IOS_MIN', '-isysroot', '$SDK']
+          cpp = ['$CXX', '-arch', 'arm64', '-target', 'arm64-apple-ios$IOS_MIN', '-isysroot', '$SDK', '-fuse-cxa-atexit']
+          objc = ['$CC', '-arch', 'arm64', '-target', 'arm64-apple-ios$IOS_MIN', '-isysroot', '$SDK']
+          ar = '$LLVM/llvm-ar'
+          ranlib = '$LLVM/llvm-ranlib'
+          strip = '$LLVM/llvm-strip'
+          pkg-config = 'false'
+
+          [host_machine]
+          system = 'darwin'
+          subsystem = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          INI
+          cat cross.ini
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          D="${{ inputs.drivers || 'softpipe,freedreno' }}"
+          meson setup build "mesa-$MESA_VERSION" --cross-file cross.ini --wrap-mode=nofallback \
+            --prefix=/redwood --libdir=lib --buildtype=release -Db_ndebug=true \
+            -Dplatforms= -Dgallium-drivers="$D" -Dfreedreno-kmds=msm -Dvulkan-drivers= -Dglx=disabled \
+            -Degl=disabled -Dgbm=disabled -Dosmesa=true -Dllvm=disabled -Dshared-glapi=enabled \
+            -Dgles1=disabled -Dgles2=enabled -Dopengl=true -Dzstd=disabled -Dxmlconfig=disabled \
+            -Dexpat=disabled -Dshader-cache=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
+            -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled -Dgallium-va=disabled \
+            -Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false
+
+      - name: Build
+        run: |
+          cd "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          LLVM=$(brew --prefix llvm)/bin
+          ninja -C build
+          mkdir -p out
+          "$LLVM/llvm-strip" -x -o out/libOSMesa.8.dylib build/src/gallium/targets/osmesa/libOSMesa.8.dylib
+          install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
+          nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
+          cp "mesa-$MESA_VERSION/src/mapi/glapi/registry/gl.xml" out/gl.xml
+          if [ "${{ inputs.air || 'true' }}" = true ]; then
+            ninja -C build src/gallium/drivers/freedreno/air_run src/gallium/drivers/freedreno/libredwoodair.dylib
+            cp build/src/gallium/drivers/freedreno/air_run out/air_run
+            "$LLVM/llvm-strip" -x -o out/libredwoodair.dylib build/src/gallium/drivers/freedreno/libredwoodair.dylib
+            install_name_tool -id /redwood/lib/libredwoodair.dylib out/libredwoodair.dylib
+          fi
+          # what it was built from
+          { echo "mesa $MESA_VERSION $MESA_SHA256"; echo "hackios-xnu-userland $HACKIOS_COMMIT";
+            echo "sdk $(xcrun --sdk iphoneos --show-sdk-version), min iOS $IOS_MIN"; } > out/BUILT-FROM
+          otool -l out/libOSMesa.8.dylib | grep -A4 LC_BUILD_VERSION | head -8
+          ls -l out; (cd out && shasum -a 256 * > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-mesa-ios16
+          path: ${{ runner.temp }}/out
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: gpu-mesa-logs
+          path: |
+            ${{ runner.temp }}/build/meson-logs
+          if-no-files-found: ignore
