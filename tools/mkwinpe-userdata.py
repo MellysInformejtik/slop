@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack a WinPE tree (efi/, boot/, sources/boot.wim, ...) into a FAT32 image for the userdata partition.
 
-  mkwinpe-userdata.py SRC_DIR OUT.img [--size-mib 1024]
+  mkwinpe-userdata.py SRC_DIR OUT.img [--size-mib 1024] [--replace REL=FILE ...]
 
 Mu boots \\efi\\boot\\bootaa64.efi from it. Rollback copies (*-before-*) and _touch_mount are skipped.
 Every file is read back from the image and compared by SHA-256. Then: img2simg OUT.img OUT.simg
@@ -14,6 +14,9 @@ a = sys.argv[1:]
 size = 1024
 if '--size-mib' in a:
     i = a.index('--size-mib'); size = int(a[i + 1]); del a[i:i + 2]
+replace = {}
+while '--replace' in a:
+    i = a.index('--replace'); rel, path = a[i + 1].split('=', 1); replace[rel] = path; del a[i:i + 2]
 src, out = a
 
 def skip(rel):
@@ -27,6 +30,9 @@ for root, dirs, names in os.walk(src):
         if not skip(rel):
             files.append(rel)
 total = sum(os.path.getsize(os.path.join(src, r)) for r in files)
+missing = set(replace) - set(files)
+if missing:
+    sys.exit('--replace of a file not in the tree: ' + ', '.join(sorted(missing)))
 if total > (size - 64) << 20:
     sys.exit(f'{total >> 20} MiB does not fit in {size} MiB')
 
@@ -42,7 +48,7 @@ for rel in sorted(files):
     if d:
         fs.makedirs('/' + d, recreate=True)
     h = hashlib.sha256()
-    with open(os.path.join(src, rel), 'rb') as f, fs.openbin('/' + rel, 'w') as o:
+    with open(replace.get(rel, os.path.join(src, rel)), 'rb') as f, fs.openbin('/' + rel, 'w') as o:
         while chunk := f.read(1 << 20):
             h.update(chunk); o.write(chunk)
     sums[rel] = h.hexdigest()
