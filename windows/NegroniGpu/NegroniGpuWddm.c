@@ -6,7 +6,7 @@
 #include <dispmprt.h>
 
 #define NEGRONI_GPU_TAG 'gNgN'
-#define NEGRONI_GPU_RANGE_COUNT 6
+#define NEGRONI_GPU_RANGE_COUNT 7
 
 typedef struct _NEGRONI_GPU_RANGE {
     ULONGLONG Start;
@@ -23,6 +23,7 @@ typedef struct _NEGRONI_GPU_ADAPTER {
 } NEGRONI_GPU_ADAPTER;
 
 static const NEGRONI_GPU_RANGE ExpectedRanges[NEGRONI_GPU_RANGE_COUNT] = {
+    { 0x00100000, 0x1f4200, NULL },
     { 0x03d00000, 0x40000, NULL }, { 0x03d6a000, 0x35000, NULL },
     { 0x03d50000, 0x10000, NULL }, { 0x03da0000, 0x40000, NULL },
     { 0x0b290000, 0x10000, NULL }, { 0x03d61000, 0x00800, NULL },

@@ -13,6 +13,11 @@ DefinitionBlock ("GpuSsdt.aml", "SSDT", 2, "SWEET ", "NEGRGPU", 1)
             Name (_UID, 0)
             Name (_CRS, ResourceTemplate ()
             {
+                // The A730 clock/power sequence uses GCC_GPU_* registers at
+                // 0x00100000 + offsets through 0x81154. XNU maps this same
+                // 0x1f4200 aperture. The Negroni UEFI register map has no
+                // other descriptor in this range; keep it owned by GPU0.
+                Memory32Fixed (ReadWrite, 0x00100000, 0x001F4200) // GCC GPU clocks
                 Memory32Fixed (ReadWrite, 0x03D00000, 0x00040000) // Adreno 730 core
                 Memory32Fixed (ReadWrite, 0x03D6A000, 0x00035000) // GMU
                 Memory32Fixed (ReadWrite, 0x03D50000, 0x00010000) // GMU RSCC

@@ -69,7 +69,7 @@ private firmware dumps out of git.
 ## Current implementation checkpoint
 
 `uefi/negroni/acpi/GpuSsdt.asl` describes an experimental `QCOM0A73`
-platform device and its six non-overlapping MMIO windows. The ranges match the Negroni
+platform device and its seven non-overlapping MMIO windows. The ranges match the Negroni
 SM8450 DTB and the XNU A730 bring-up sources. `windows/NegroniGpu/NegroniGpuProbe.c`
 is a native ARM64 KMDF resource-validation probe: it checks those translated
 addresses and lengths without mapping registers, requesting power, or changing
@@ -82,7 +82,10 @@ does not return `DRIVERCAPS` or claim render support. Both binaries compile for
 ARM64 with the installed WDK, but neither
 is staged or installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
 verified. `GpuSsdt.asl` compiled cleanly with ACPICA iasl 20251212 (latest
-six-window AML is 167 bytes, no diagnostics). GPU-CC (0x03d90000/0xa000) and
+seven-window AML is validated after the GCC clock aperture was added. The GCC
+range (0x00100000/0x1f4200) matches the XNU bring-up map and contains the GPU
+clock registers at offsets 0x81004 through 0x81154. The Negroni UEFI register
+map lists no other device aperture in this range. GPU-CC (0x03d90000/0xa000) and
 CX-misc (0x03d9e000/0x1000) are subranges inside the DTB GMU aperture
 0x03d6a000/0x35000 and are accessed as offsets within that single mapping,
 avoiding duplicate overlapping PnP descriptors. The full UEFI build and firmware-table coexistence with
