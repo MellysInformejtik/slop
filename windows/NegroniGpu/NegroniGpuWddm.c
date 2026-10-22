@@ -163,6 +163,28 @@ NegroniGpuRemoveDevice(IN_CONST_PVOID MiniportDeviceContext)
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+APIENTRY
+NegroniGpuQueryAdapterInfo(IN_CONST_HANDLE AdapterHandle,
+                           IN_CONST_PDXGKARG_QUERYADAPTERINFO Query)
+{
+    DXGK_WDDMDEVICECAPS *caps;
+
+    // This pre-start query reports only the DDI level this prototype was
+    // compiled for. It intentionally does not advertise DRIVERCAPS/rendering.
+    if (AdapterHandle == NULL || Query == NULL)
+        return STATUS_INVALID_PARAMETER;
+    if (Query->Type != DXGKQAITYPE_WDDMDEVICECAPS)
+        return STATUS_NOT_SUPPORTED;
+    if (Query->pOutputData == NULL ||
+        Query->OutputDataSize < sizeof(DXGK_WDDMDEVICECAPS))
+        return STATUS_BUFFER_TOO_SMALL;
+
+    caps = (DXGK_WDDMDEVICECAPS *)Query->pOutputData;
+    caps->WDDMVersion = DXGKDDI_WDDMv2_7;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 NTAPI
 DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
@@ -174,5 +196,6 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     init.DxgkDdiStartDevice = NegroniGpuStartDevice;
     init.DxgkDdiStopDevice = NegroniGpuStopDevice;
     init.DxgkDdiRemoveDevice = NegroniGpuRemoveDevice;
+    init.DxgkDdiQueryAdapterInfo = NegroniGpuQueryAdapterInfo;
     return DxgkInitialize(DriverObject, RegistryPath, &init);
 }

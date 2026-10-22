@@ -76,7 +76,10 @@ addresses and lengths without mapping registers, requesting power, or changing
 display ownership. `NegroniGpuWddm.c` is an incomplete render-only WDDM miniport
 prototype that obtains the translated resources using `DxgkCbGetDeviceInformation`
 and maps them using `DxgkCbMapMemory`; it performs no register access and has no
-render DDIs. Both binaries compile for ARM64 with the installed WDK, but neither
+render DDIs. Its QueryAdapterInfo callback only returns the supported WDDM 2.7
+interface version for the OS's pre-start `WDDMDEVICECAPS` query; it deliberately
+does not return `DRIVERCAPS` or claim render support. Both binaries compile for
+ARM64 with the installed WDK, but neither
 is staged or installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
 verified. `GpuSsdt.asl` compiled cleanly with ACPICA iasl 20251212 (latest
 six-window AML is 167 bytes, no diagnostics). GPU-CC (0x03d90000/0xa000) and
