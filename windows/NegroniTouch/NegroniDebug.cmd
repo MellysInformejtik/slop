@@ -11,24 +11,18 @@ echo.
 if exist "%SystemDrive%\NegroniTouch-trust.txt" type "%SystemDrive%\NegroniTouch-trust.txt"
 type "%SystemDrive%\NegroniTouch-debug-load.txt"
 echo.
-echo ---- touch device (ACPI\NEGT0001) ----
-pnputil /enum-devices /deviceid "ACPI\NEGT0001"
 echo ---- driver service ----
-sc query NegroniTouch | findstr /i "STATE WIN32_EXIT SERVICE_EXIT"
-reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch /v Stage
-reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch /v Status
-reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch /v Detail
-reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch\Enum
-echo ---- vhf ----
-sc query vhf | findstr /i "STATE"
-echo.
+sc query NegroniTouch | findstr /i "STATE WIN32_EXIT"
+echo ---- setupapi: NegroniTouch errors ----
+findstr /i /c:"!!!" /c:"NegroniTouch" "%SystemRoot%\inf\setupapi.dev.log" | findstr /v /i "reg query"
+echo ---- touch device status (ACPI\NEGT0001) ----
+pnputil /enum-devices /instanceid "ACPI\NEGT0001\0" | findstr /i "Status Problem Driver"
 echo Full report: %DBG%
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if exist "%%d:\sources\boot.wim" (
   copy /y "%DBG%" "%%d:\negroni-pe-debug.txt" >nul 2>&1
   if not errorlevel 1 echo Report also saved to %%d:\negroni-pe-debug.txt
 )
-echo Photograph this window. It stays open even without touch or USB input.
-echo To read the full report with a keyboard: type %DBG%
+echo Photograph this window.
 endlocal
 exit /b
 
