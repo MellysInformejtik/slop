@@ -1,0 +1,66 @@
+; Experimental firmware-package/WDDM wiring only.
+; Do not install: the miniport has no render DDIs or user-mode driver.
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Display
+ClassGuid   = {4D36E968-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderName%
+DriverVer   = 10/22/2026,0.0.1.0
+CatalogFile = NegroniGpuWddm.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+NegroniGpuWddm_CopyFiles = 12
+NegroniGpuFirmware_CopyFiles = 13
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+NegroniGpuWddm.sys = 1
+gmu_gen70000.bin = 1
+a730_sqe.fw = 1
+a730_zap.mdt = 1
+a730_zap.b01 = 1
+
+[Manufacturer]
+%ProviderName% = NegroniGpuModels, NTarm64
+
+[NegroniGpuModels.NTarm64]
+%DeviceDesc% = NegroniGpuWddm_Install, ACPI\QCOM0A73
+
+[NegroniGpuWddm_Install.NT]
+CopyFiles = NegroniGpuWddm_CopyFiles, NegroniGpuFirmware_CopyFiles
+
+[NegroniGpuWddm_CopyFiles]
+NegroniGpuWddm.sys
+
+[NegroniGpuFirmware_CopyFiles]
+gmu_gen70000.bin
+a730_sqe.fw
+a730_zap.mdt
+a730_zap.b01
+
+[NegroniGpuWddm_Install.NT.HW]
+AddReg = NegroniGpuFirmwarePath
+
+[NegroniGpuFirmwarePath]
+; DIRID 13 expands to this package's isolated Driver Store directory.
+HKR,,FirmwareDirectory,,%13%
+
+[NegroniGpuWddm_Install.NT.Services]
+AddService = NegroniGpuWddm, 0x00000002, NegroniGpuWddm_Service
+
+[NegroniGpuWddm_Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 0
+LoadOrderGroup = Video
+ServiceBinary = %12%\NegroniGpuWddm.sys
+
+[Strings]
+ProviderName = "ios-sweet"
+DiskName     = "Negroni A730 experimental WDDM package"
+DeviceDesc   = "Negroni Adreno 730 WDDM prototype - DO NOT INSTALL"
+ServiceDesc  = "Negroni Adreno 730 WDDM prototype - DO NOT INSTALL"
