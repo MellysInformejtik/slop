@@ -1,0 +1,73 @@
+diff --git a/bsd/dev/negroni_adreno.c b/bsd/dev/negroni_adreno.c
+index 2571b60..3386688 100644
+--- a/bsd/dev/negroni_adreno.c
++++ b/bsd/dev/negroni_adreno.c
+@@ -1948,6 +1948,57 @@ static bool (*const steps[])(void) = {
+ 	step_hfi_messages, step_core_power, step_core_space, step_core_start, step_zap_and_secure, step_frame,
+ };
+ 
++
++/*
++ * The way back (Linux a6xx_gmu_shutdown, a6xx_rpmh_stop): when the ladder ends, nothing of the
++ * GPU block is left running unless negroniadreno_keep=1. Slumber (the GMU powers the 3D core down
++ * and drops its votes), halt the GMU, put the GPU RSC to sleep, take the SMMU routes and contexts
++ * back, have TrustZone drop the zap shader, collapse CX.
++ */
++static void
++smmu_space_off(struct gpu_space *space, uint32_t match)
++{
++	put(smmu, "SMR (off)", SMMU_SMR(match), 0);
++	put(smmu, "S2CR (fault)", SMMU_S2CR(match), SMMU_S2CR_FAULT);
++	put(smmu, "CB SCTLR (off)", (smmu_pages + space->context) * smmu_page + SMMU_CB_SCTLR, 0);
++}
++
++static void
++gpu_stop(void)
++{
++	uint64_t answer = 0;
++
++	step = 99;
++	printf("NEGRONI ADRENO: stopping the GPU block\n");
++	if (gmu_started) {
++		if (gx_on) {
++			wr(gmu + GMU_REG(GMU_HOST2GMU_INTR_SET), 1u << OOB_GPU_SET_ACK);      /* clear OOB GPU_SET */
++		}
++		uint32_t slumber[3] = { 0, 0, 0 };
++		hfi_send("PREPARE_SLUMBER", 33, slumber, sizeof(slumber));
++		gmu_put("GMU2HOST_INTR_MASK", 0x1f993, ~0u);
++		gmu_put("CM3_SYSRESET", GMU_CM3_SYSRESET, 1);
++		gmu_put("RSCC_CONTROL_REQ (sleep)", 0x23b07, 1);
++		bool asleep = wait_for(rscc + RSCC_STATUS0, 1u << 16, 1u << 16, 10);
++		gmu_put("RSCC_CONTROL_REQ", 0x23b07, 0);
++		printf("NEGRONI ADRENO: GPU RSC %s, GX GDSC %#x\n", asleep ? "asleep" : "DID NOT SLEEP",
++		    rd(gpucc + GPUCC_GX_GDSCR));
++	}
++	if (core_space_on) {
++		smmu_space_off(&core_space, core_space.match);
++	}
++	if (gmu_space_on) {
++		smmu_space_off(&gmu_space, gmu_space.match);
++	}
++	if (core_unsecure || core_runs) {
++		scm("PAS shutdown (zap)", SCM_64 | SCM_SIP | SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, PAS_GPU, 0, 0, &answer);
++	}
++	if (cx_is_on() && !(rd(gpucc + GPUCC_GX_GDSCR) & GDSC_PWR_ON)) {
++		put(gpucc, "GPU_CX_GDSCR (collapse)", GPUCC_CX_GDSCR, rd(gpucc + GPUCC_CX_GDSCR) | GDSC_SW_COLLAPSE);
++	}
++	printf("NEGRONI ADRENO: GPU block stopped\n");
++}
++
+ void
+ negroni_adreno_init(void)
+ {
+@@ -1993,5 +2044,10 @@ negroni_adreno_init(void)
+ 		negroni_gpu_badge_color = 0x00d0a000;
+ 	}
+ 	printf("NEGRONI ADRENO: done (asked %u, reached %u)\n", last, MIN(step, last));
++	uint32_t keep = 0;
++	(void)PE_parse_boot_argn("negroniadreno_keep", &keep, sizeof(keep));
++	if (!keep && last >= 4) {
++		gpu_stop();
++	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_NEGRONI */
