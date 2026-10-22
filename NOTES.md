@@ -1,5 +1,12 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## 2026-10-22 Negroni Windows Adreno 730 research
+
+- User clarified the target is a Windows ARM64 GPU driver for the new Windows install, not the earlier iOS Metal backport. Added `windows/NegroniGpu/README.md` with requirements, safe milestones, and references. No Windows driver code was built, no GPU driver was installed, and the phone/Windows image was not modified for this work.
+- No ready A730 Windows package found in the Qualcomm WoA driver project; its Snapdragon 8 Gen 1 request (#101) remains open without an implementation linked. Android KGSL/Adreno binaries are not Windows WDDM drivers.
+- A public WoA project documents an A610 WDDM KMD + Mesa/Freedreno UMD stack, but it targets SM6225/A610 and has no root license file; use as architecture reference only, do not copy its source without a license. Microsoft WDDM requires kernel- and user-mode display components, and WoA requires native ARM64 drivers.
+- Existing Negroni XNU patches `0099`–`0117` record A730 power/clock, TrustZone, GMU/HFI and CP bring-up; these are hardware evidence, not a Windows driver. No Negroni GPU ACPI resource node was found in current `uefi/` sources. First port milestone is a safe ACPI resource contract and an ARM64 WDDM KMD that can enumerate without powering the GPU.
+
 ## 2026-10-22 Negroni full Windows install milestone
 
 - User reports DISM applied Windows 11 Pro ARM64 image version 10.0.22631.7584 to phone Disk 1 partition 16 (`D:`, 96.15 GiB NTFS). User's admin PowerShell output confirms the offline driver package install completed successfully.
