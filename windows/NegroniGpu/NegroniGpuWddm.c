@@ -9,6 +9,20 @@
 
 #define NEGRONI_GPU_TAG 'gNgN'
 #define NEGRONI_GPU_RANGE_COUNT 7
+#define NG_RANGE_GCC 0
+#define NG_RANGE_GMU 2
+
+/* SM8450 GCC/GPUCC offsets verified by the Negroni XNU bring-up. */
+#define NG_GCC_GPU_CFG_AHB_CBCR 0x81004
+#define NG_GPUCC_IN_GMU         0x26000
+#define NG_GPUCC_CX_GDSCR       0x09108
+#define NG_GPUCC_GX_GDSCR       0x0905c
+#define NG_GPUCC_AHB_CBCR       0x0911c
+#define NG_GPUCC_CX_GMU_CBCR    0x0913c
+#define NG_GMU_AO_COUNTER_L     0x14220
+#define NG_GMU_CM3_FW_INIT      0x14070
+#define NG_CBCR_OFF             (1u << 31)
+#define NG_GDSC_PWR_ON           (1u << 31)
 
 typedef struct _NEGRONI_GPU_RANGE {
     ULONGLONG Start;
@@ -41,6 +55,86 @@ static const NEGRONI_GPU_RANGE ExpectedRanges[NEGRONI_GPU_RANGE_COUNT] = {
     { 0x03d50000, 0x10000, NULL }, { 0x03da0000, 0x40000, NULL },
     { 0x0b290000, 0x10000, NULL }, { 0x03d61000, 0x00800, NULL },
 };
+
+static BOOLEAN
+NegroniGpuReadMappedRegister(NEGRONI_GPU_ADAPTER *Adapter, ULONG RangeIndex,
+                             ULONG Offset, PULONG Value)
+{
+    NEGRONI_GPU_RANGE *range;
+
+    if (Adapter == NULL || Value == NULL || RangeIndex >= NEGRONI_GPU_RANGE_COUNT ||
+        (Offset & (sizeof(ULONG) - 1)) != 0)
+        return FALSE;
+    range = &Adapter->Ranges[RangeIndex];
+    if (range->Mapping == NULL || range->Length < sizeof(ULONG) ||
+        Offset > range->Length - sizeof(ULONG))
+        return FALSE;
+
+    *Value = READ_REGISTER_ULONG((PULONG)((PUCHAR)range->Mapping + Offset));
+    return TRUE;
+}
+
+static VOID
+NegroniGpuReadOnlyPreflight(NEGRONI_GPU_ADAPTER *Adapter)
+{
+    ULONG gccCfg, cx, gx, ahb, gmuClock, fwInit, counter0, counter1;
+    LARGE_INTEGER interval;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return;
+
+    if (!NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GCC,
+        NG_GCC_GPU_CFG_AHB_CBCR, &gccCfg)) {
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_ERROR_LEVEL,
+            "NegroniGpuWddm: GCC register range check failed; no further MMIO\n");
+        return;
+    }
+    DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+        "NegroniGpuWddm: read-only GCC GPU_CFG_AHB_CBCR=%#x\n", gccCfg);
+    if (gccCfg & NG_CBCR_OFF) {
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+            "NegroniGpuWddm: GCC AHB clock is off; skip GPUCC/GMU reads\n");
+        return;
+    }
+
+    if (!NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GPUCC_IN_GMU + NG_GPUCC_CX_GDSCR, &cx) ||
+        !NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GPUCC_IN_GMU + NG_GPUCC_GX_GDSCR, &gx) ||
+        !NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GPUCC_IN_GMU + NG_GPUCC_AHB_CBCR, &ahb) ||
+        !NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GPUCC_IN_GMU + NG_GPUCC_CX_GMU_CBCR, &gmuClock)) {
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_ERROR_LEVEL,
+            "NegroniGpuWddm: GPUCC register range check failed; no GMU reads\n");
+        return;
+    }
+    DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+        "NegroniGpuWddm: read-only GPUCC CX=%#x GX=%#x AHB=%#x GMUCLK=%#x\n",
+        cx, gx, ahb, gmuClock);
+    if (!(cx & NG_GDSC_PWR_ON) || (gmuClock & NG_CBCR_OFF)) {
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+            "NegroniGpuWddm: CX/GMU clock not ready; skip GMU CX reads\n");
+        return;
+    }
+
+    if (!NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GMU_AO_COUNTER_L, &counter0) ||
+        !NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GMU_CM3_FW_INIT, &fwInit)) {
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_ERROR_LEVEL,
+            "NegroniGpuWddm: GMU register range check failed\n");
+        return;
+    }
+    interval.QuadPart = -10000; /* 1 ms, StartDevice is PASSIVE_LEVEL. */
+    (VOID)KeDelayExecutionThread(KernelMode, FALSE, &interval);
+    if (!NegroniGpuReadMappedRegister(Adapter, NG_RANGE_GMU,
+            NG_GMU_AO_COUNTER_L, &counter1))
+        return;
+    DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+        "NegroniGpuWddm: read-only GMU AO counter %#x -> %#x; FW_INIT=%#x\n",
+        counter0, counter1, fwInit);
+}
 
 static VOID
 NegroniGpuFreeFirmware(NEGRONI_GPU_ADAPTER *Adapter)
@@ -248,9 +342,10 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
         NegroniGpuUnmapRanges(adapter);
         return status;
     }
+    NegroniGpuReadOnlyPreflight(adapter);
     adapter->Started = TRUE;
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
-               "NegroniGpuWddm: WDDM 2.7 resource and firmware package ready; GPU registers untouched\n");
+               "NegroniGpuWddm: WDDM 2.7 resources and firmware ready; no GPU register writes issued\n");
     return STATUS_SUCCESS;
 }
 

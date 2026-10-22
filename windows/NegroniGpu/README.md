@@ -75,7 +75,12 @@ remain outside git. `NegroniGpuFirmwareIo.c` reads files relative to a
 path supplied by the INF rather than a hardcoded Driver Store path. StartDevice
 validates and retains the GMU image, SQE image, ZAP manifest, and segment files;
 StopDevice/RemoveDevice release them. No INF currently creates that key value,
-and there is still no TrustZone call or GPU register access. This is build-only.
+so this is build-only. After package validation, StartDevice has a read-only
+power-state preflight: it reads the GCC GPU AHB status, and only if that clock
+is on does it read GPUCC state; it reads the GMU counter only when CX and the
+GMU clock report on. Every access is range/alignment checked, and this path
+does not power the GPU, call TrustZone, or write registers. It does not enable
+rendering.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
