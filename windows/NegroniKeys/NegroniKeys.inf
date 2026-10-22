@@ -1,0 +1,57 @@
+; NegroniKeys: PMIC power and volume keys of the OnePlus 10 Pro (negroni), ACPI NEGK0001, through VHF.
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider    = %ProviderName%
+CatalogFile = NegroniKeys.cat
+DriverVer   = 10/20/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+NegroniKeys.sys = 1
+
+[Manufacturer]
+%ProviderName% = Negroni, NTARM64
+
+[Negroni.NTARM64]
+%DeviceDesc% = NegroniKeys_Install, ACPI\NEGK0001
+
+[NegroniKeys_Install.NT]
+CopyFiles = NegroniKeys_CopyFiles
+
+[NegroniKeys_CopyFiles]
+NegroniKeys.sys
+
+[NegroniKeys_Install.NT.HW]
+AddReg = NegroniKeys_Filters
+
+[NegroniKeys_Filters]
+HKR,,"LowerFilters",0x00010000,"vhf"
+
+[NegroniKeys_Install.NT.Services]
+AddService = NegroniKeys, 0x00000002, NegroniKeys_Service
+
+[NegroniKeys_Service]
+DisplayName   = %DeviceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %13%\NegroniKeys.sys
+
+[NegroniKeys_Install.NT.Wdf]
+KmdfService = NegroniKeys, NegroniKeys_Wdf
+
+[NegroniKeys_Wdf]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+ProviderName = "ios-sweet"
+DiskName     = "NegroniKeys"
+DeviceDesc   = "OnePlus power and volume keys (negroni)"

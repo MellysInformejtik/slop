@@ -2,7 +2,7 @@
 #   - skip the whole first-run setup: local account "paw" (no password), auto logon (windows\unattend-negroni.xml)
 #   - BypassNRO in case a network page still shows
 #   - test signing on, in the BCD of the phone's EFI partition
-#   - the OnePlus touch driver (NegroniTouch, test-signed catalog) added to the image
+#   - the OnePlus touch driver (NegroniTouch) and key driver (NegroniKeys: power, volume), test-signed catalogs
 #
 # Administrator PowerShell:
 #   .\prepare-negroni-windows.ps1 -Windows X: -Efi Y:
@@ -10,7 +10,8 @@
 param(
     [Parameter(Mandatory)][string]$Windows,
     [Parameter(Mandatory)][string]$Efi,
-    [string]$Driver = (Join-Path $PSScriptRoot 'NegroniTouch\out\v4-catalog')
+    [string]$Driver = (Join-Path $PSScriptRoot 'NegroniTouch\out\v4-catalog'),
+    [string]$KeysDriver = (Join-Path $PSScriptRoot 'NegroniKeys\out\pkg')
 )
 $ErrorActionPreference = 'Stop'
 $Windows = $Windows.TrimEnd('\'); $Efi = $Efi.TrimEnd('\')
@@ -53,8 +54,10 @@ Get-ChildItem $Driver -Filter *.cer | ForEach-Object {
         reg unload HKLM\NEGRONI_SW | Out-Null
     }
 }
-dism /Image:"$Windows\" /Add-Driver /Driver:"$Driver\NegroniTouch.inf" /ForceUnsigned
-if ($LASTEXITCODE -ne 0) { Write-Warning "DISM could not add the driver ($LASTEXITCODE): install it on the phone with pnputil instead" }
-dism /Image:"$Windows\" /Get-Drivers | Select-String -Context 0,6 'negronitouch'
+foreach ($inf in "$Driver\NegroniTouch.inf", "$KeysDriver\NegroniKeys.inf") {
+    dism /Image:"$Windows\" /Add-Driver /Driver:"$inf" /ForceUnsigned
+    if ($LASTEXITCODE -ne 0) { Write-Warning "DISM could not add $inf ($LASTEXITCODE): install it on the phone with pnputil instead" }
+}
+dism /Image:"$Windows\" /Get-Drivers | Select-String -Context 0,6 'negronitouch|negronikeys'
 
 Write-Host 'done: eject the phone and boot Windows'
