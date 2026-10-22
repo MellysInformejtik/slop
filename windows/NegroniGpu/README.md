@@ -52,9 +52,9 @@ addresses and lengths without mapping registers, requesting power, or changing
 display ownership. It built successfully with the installed WDK. It is not a
 WDDM miniport and provides no graphics acceleration. Its INF is not staged or
 installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
-verified. Before any build/boot, compile the AML and inspect the firmware table
-list to confirm this SSDT coexists with `TouchSsdt` and the existing display
-path.
+verified. `GpuSsdt.asl` compiled cleanly with ACPICA iasl 20251212 (191-byte
+AML, no diagnostics). The full UEFI build and firmware-table coexistence with
+`TouchSsdt` and the existing display path still need validation before boot.
 
 ## References
 
