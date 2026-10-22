@@ -50,4 +50,4 @@ if ($LASTEXITCODE -ne 0) {
 Get-ChildItem -LiteralPath $packageDir -File | Get-FileHash -Algorithm SHA256 |
     Select-Object @{Name='File';Expression={ Split-Path $_.Path -Leaf }}, Hash
 Write-Host "Offline experimental package staged at: $packageDir"
-Write-Warning 'DO NOT install: this package has no render DDIs or user-mode driver.'
+Write-Warning 'DO NOT install: the KMD callback table is incomplete and no paired Adreno user-mode driver exists.'

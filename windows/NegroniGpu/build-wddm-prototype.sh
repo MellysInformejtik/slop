@@ -1,5 +1,5 @@
 #!/bin/bash
-# Compile-only WDDM 2.7 render-only resource-map prototype for ARM64.
+# Compile-only WDDM 2.7 DDI-interface / WDDM 1.3 render-only prototype.
 # Incomplete DRIVER_INITIALIZATION_DATA; never package or install this binary.
 set -euo pipefail
 cd "$(dirname "$0")"

@@ -1,4 +1,4 @@
-// Early WDDM render-only miniport bring-up for Negroni SM8450.
+// Early WDDM 2.7 DDI-interface miniport with WDDM 1.3 render-only caps.
 // This checkpoint validates/maps the ACPI MMIO resources through Dxgkrnl but
 // deliberately performs no register access, power sequencing, or submission.
 // The callback table is incomplete for a usable adapter and must not be staged.
@@ -390,7 +390,7 @@ NegroniGpuQueryAdapterInfo(IN_CONST_HANDLE AdapterHandle,
         return STATUS_BUFFER_TOO_SMALL;
 
     caps = (DXGK_WDDMDEVICECAPS *)Query->pOutputData;
-    caps->WDDMVersion = DXGKDDI_WDDMv2_7;
+    caps->WDDMVersion = DXGKDDI_WDDMv1_3;
     return STATUS_SUCCESS;
 }
 
