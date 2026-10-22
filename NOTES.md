@@ -1,5 +1,12 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## 2026-10-22 Negroni full Windows install milestone
+
+- User reports DISM applied Windows 11 Pro ARM64 image version 10.0.22631.7584 to phone Disk 1 partition 16 (`D:`, 96.15 GiB NTFS). User's admin PowerShell output confirms the offline driver package install completed successfully.
+- EFI is Disk 1 partition 15 (`S:`, 512 MiB). User's `bcdedit /store S:\EFI\Microsoft\Boot\BCD /enum '{default}'` output shows `device`/`osdevice` partition D:, `winload.efi`, and `testsigning Yes`.
+- `dism /Image:D:\ /Get-Drivers /Format:Table` confirms `oem0.inf` from `negronitouch.inf` is staged, HIDClass, provider `ios-sweet`, version 1.0.0.0. Package source: `windows/NegroniTouch/out/v4-catalog`.
+- Observation is host-side only: no first boot of installed Windows, touch binding/input, or USB functionality verified yet. Next: safely eject/unmount Qualcomm MMC Storage from the host, exit Mu Mass Storage, boot the phone's Windows UEFI entry, and capture any boot/driver result. Do not repartition or format again.
+
 ## Active Windows touch work (2026-10-21)
 
 - **WinPE rebuild handoff:** user requested userdata image rebuild, saying the admin packaging step was done. Checked the exact `C:\Users\paw\negroni-winpe\boot.wim`: SHA256 `EEFFAEEA81FEB7D9603365BFE0D71F6E7F1632016090AD86E04F5CE7E5B22D60`; its DriverStore still has 26,512-byte NegroniTouch.sys from Oct 20. New signed v3 driver is 30,608 bytes (SHA256 `EADF2E050290E4CBD8911E310FB90E141FB8EBD885BD056C62CA16A7EFAE05F0`). Therefore the current WIM does not contain v3 and rebuilding userdata from it would repeat the old driver. Attempted `package.ps1`; signtool succeeded, DISM returned error 740 at mounting WIM index 1. The WIM and BCD backups are in `windows/NegroniTouch/out/boot-before-gpio-v3.wim` and `bcd-before-gpio-v3`; no userdata image was changed or flashed. Next: complete DISM Add-Driver in Administrator PowerShell, verify both indexes contain the 30,608-byte driver, then replace `/sources/boot.wim` and UEFI BCD in `~/ios-work/winpe/winpe-fat.img`, run img2simg to regenerate `.simg`, compare/read back sparse output. User authorized rebuild, not flashing.
