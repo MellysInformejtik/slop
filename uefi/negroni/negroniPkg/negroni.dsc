@@ -86,6 +86,8 @@
   negroniPkg/Drivers/NegroniKeyInputDxe/NegroniKeyInputDxe.inf
   negroniPkg/Drivers/NegroniTouchDxe/NegroniTouchDxe.inf
   negroniPkg/Drivers/NegroniTouchDiag/NegroniTouchDiag.inf
+  negroniPkg/Drivers/NegroniUsbDiag/NegroniUsbDiag.inf
+  MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
 
   #
   # ACPI Tables

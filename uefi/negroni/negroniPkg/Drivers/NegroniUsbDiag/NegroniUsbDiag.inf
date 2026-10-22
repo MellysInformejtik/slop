@@ -1,0 +1,20 @@
+[Defines]
+  INF_VERSION = 0x00010005
+  BASE_NAME = NegroniUsbDiag
+  FILE_GUID = 4B6D7312-F9B0-48A6-AD12-2B806CC8DE64
+  MODULE_TYPE = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT = NegroniUsbDiagEntry
+[Sources]
+  NegroniUsbDiag.c
+[Packages]
+  MdePkg/MdePkg.dec
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  MemoryAllocationLib
+[Protocols]
+  gEfiUsbIoProtocolGuid
+  gEfiUsb2HcProtocolGuid
+  gEfiUsbFunctionIoProtocolGuid
