@@ -87,8 +87,9 @@
 
   # negroni: SPMI channel abort in PmicDxe
   # INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
-  # negroni: SPMI channel abort in PmicDxe
-  # INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
+  # Device-mode mass storage requires Qualcomm USB power/role and config DXEs.
+  # Use UsbConfigDxe without the host-mode patch.
+  INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/TsensDxe/TsensDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/DDRInfoDxe/DDRInfoDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
@@ -102,8 +103,7 @@
 
   INF Binaries/negroni/QcomPkg/Drivers/UsbMsdDxe/UsbMsdDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
-  # negroni: needs UsbPwrCtrlDxe (PMIC), loops otherwise
-  # INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
+  INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbInitDxe/UsbInitDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UCDxe/UCDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/RNGDxe/RngDxe.inf

@@ -78,8 +78,7 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
   INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
 
-  # negroni: SPMI channel abort in PmicDxe
-  # INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
+  INF Binaries/negroni/QcomPkg/Drivers/UsbPwrCtrlDxe/UsbPwrCtrlDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/XhciPciEmulationDxe/XhciPciEmulationDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/XhciDxe/XhciDxe.inf
@@ -90,8 +89,7 @@ APRIORI DXE {
 
   INF Binaries/negroni/QcomPkg/Drivers/UsbMsdDxe/UsbMsdDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
-  # negroni: needs UsbPwrCtrlDxe (PMIC), loops otherwise
-  # INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
+  INF Binaries/negroni/QcomPkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
   INF Binaries/negroni/QcomPkg/Drivers/UsbInitDxe/UsbInitDxe.inf
   # negroni: SPMI channel abort in PmicDxe
   # INF Binaries/negroni/QcomPkg/Drivers/ButtonsDxe/ButtonsDxe.inf
