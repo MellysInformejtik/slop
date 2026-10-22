@@ -647,7 +647,7 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - ACPI source validation follow-up: compiled `GpuSsdt.asl` using ACPICA iasl 20251212 from a temporary extracted Ubuntu package. Result: 191-byte AML, 0 errors/warnings/remarks. Generated AML/hex were removed from the source tree after validation; full Mu/EDK build and firmware-table coexistence remain untested.
 
 ### WDDM architecture decision
-- Target is a render-only WDDM adapter, leaving Basic Display / firmware framebuffer as the system display path. Microsoft documents render-only devices as WDDM 1.2+ with no VidPN source/target; an MCDM compute-only path does not meet graphics rendering. See `windows/NegroniGpu/README.md` and Microsoft WDDM capability documentation: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/wddm-driver-and-feature-caps
+- Historical decision, superseded by the 2026-10-22 WDDM target correction below: target was a render-only WDDM adapter, leaving Basic Display / firmware framebuffer as the system display path. Microsoft documentation now confirms that render-only driver type is supported only as WDDM 1.2; the WDDM 2.7 render-only assumption was incorrect.
 - The architecture decision is recorded in `4ac7ae5`. No GPU device has been installed or claimed working.
 - Architecture decision committed as `4ac7ae5` (`select render-only WDDM target for A730`).
 
@@ -711,6 +711,12 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Added ASan/UBSan tests for wraparound, capacity rejection, invalid and future RPTR values, unchanged pointer handling, and monotonic fences. `test-host.sh` passes PM4, ring/fence, and real firmware parser suites.
 - ARM64 KMD prototype rebuild passed, PE machine ARM64, SYS SHA256 `d15de3a4e0046b82d45e90c06d2a1ee40f6374ff648fbc130e09493cc1777484`. Offline package regenerated and Inf2Cat passed with no warnings/errors; package SYS hash matches the build. Still DO NOT INSTALL, no device test or flash.
 - Next: connect these primitives to documented WDDM submit/completion/interrupt callback contracts, implement bounds-checked GPU command-buffer validation and interrupt-safe completion, then develop real memory/SMMU and TrustZone paths. The helpers alone do not submit hardware work.
+
+## 2026-10-22 A730 Windows GPU port — WDDM target correction
+- Official Microsoft documentation checked during the WDDM submission review: Windows 11 23H2's WDDM version did not change from 22H2 (WDDM 3.1); the documented WDDM *render-only driver type* is supported only as WDDM 1.2. This invalidates the earlier assumption that a WDDM 2.7 render-only adapter is the right 23H2 target. Sources: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/what-s-new-for-windows-11-display-and-graphics-drivers and https://learn.microsoft.com/en-us/windows-hardware/drivers/display/wddm-in-windows-8.
+- Corrected `windows/NegroniGpu/README.md`: don't claim WDDM 2.7 render-only; settle either a validated WDDM 1.2 compatibility route or a full WDDM 3.1 graphics KMD/DDI contract paired with a UMD. The prototype's current QueryAdapterInfo WDDM 2.7 value remains compile-time scaffolding only and must not be installed or presented as a valid adapter.
+- This is an architecture correction, not a working GPU port. No callback wiring, driver install, firmware build, device access, or flash occurred. The firmware loader/authentication, secure memory and SMMU ownership, render/allocation/context/submit/interrupt/reset DDIs, paired graphics UMD, and testing are all still outstanding.
+- Next action: map the exact WDDM 3.1 required KMD callbacks and caps for a full graphics adapter with zero VidPN outputs, and verify whether retaining Basic Display on this phone is supported. If that cannot be established, evaluate the WDDM 1.2 render-only path and its UMD/runtime compatibility before any implementation work. Keep the local package marked DO NOT INSTALL.
 
 ## 2026-10-22 Windows default boot
 - Mu fork b474353a: NegroniWindowsFirstDxe (protocol notify on SimpleFileSystem) puts a "Windows Boot Manager"

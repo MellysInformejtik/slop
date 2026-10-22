@@ -32,10 +32,12 @@ staged; this project does not change the phone or its Windows image.
 
 1. Define and review the ACPI resource contract for the SM8450 GPU; keep the
    existing framebuffer boot path available for recovery.
-2. Build a test-signed ARM64 **render-only WDDM KMD** that enumerates without
-   powering the GPU, then add a guarded hardware-start path using the proven
-   Negroni sequence. Leave the system display on its existing Basic Display /
-   firmware framebuffer path; do not bind the A730 as the boot display adapter.
+2. Resolve the WDDM model before implementing callbacks. The installed Windows
+   11 23H2 build uses WDDM 3.1; Microsoft documents the *render-only driver
+   type* specifically for WDDM 1.2. Do not advertise WDDM 2.7 as a render-only
+   adapter. A graphics-capable WDDM 3.1 path must first establish the required
+   full-graphics KMD/DDI contract and a paired UMD, while preserving the
+   existing Basic Display / firmware framebuffer boot path.
 3. Validate firmware loading, power/clock votes, GMU/HFI, SMMU mappings, and a
    bounded CP submit/fence test before exposing render acceleration.
 4. Add a Mesa Freedreno D3D10 user-mode driver and a WDDM winsys, then test
@@ -43,14 +45,18 @@ staged; this project does not change the phone or its Windows image.
 
 ## WDDM direction
 
-The first acceleration target is a render-only WDDM adapter. Windows 11 23H2
-supports the required model, and Microsoft documents render-only adapters as
-having no VidPN sources/targets. This keeps the A730 separate from the existing
-display device and preserves Basic Display as the recovery path. The stage-0
-KMDF probe is only a resource-contract diagnostic; it is not the WDDM KMD and
-must not be treated as an installable graphics driver. A compute-only MCDM
-prototype is not the target because this port needs graphics rendering, not
-only compute.
+The original plan to advertise a WDDM 2.7 render-only adapter was incorrect.
+Windows 11 23H2 uses WDDM 3.1 (its WDDM version did not change from 22H2), and
+Microsoft describes the render-only *driver type* as supported only for WDDM
+1.2. A WDDM 1.2 compatibility route may be investigated, but it is not yet
+shown to support the desired modern UMD/runtime path. The viable modern graphics
+route appears to require a full WDDM 3.1 KMD with the required display DDIs,
+even if the A730 reports no VidPN outputs, plus a paired graphics UMD. This
+needs validation against the exact Dxgkrnl/WDK contract before more callbacks
+are wired. Keep Basic Display / firmware framebuffer available as the recovery
+path. The stage-0 KMDF probe is only a resource-contract diagnostic; it is not
+the WDDM KMD and must not be treated as an installable graphics driver. MCDM
+remains compute-only and does not provide the graphics path this port needs.
 
 The real KMD must use `DRIVER_INITIALIZATION_DATA`/`DxgkInitialize` and implement
 the render-specific WDDM DDIs, including allocation, paging, context, command
@@ -59,8 +65,11 @@ Windows D3D runtime ABI and submit work through that KMD. An early, deliberately
 incomplete `DRIVER_INITIALIZATION_DATA` prototype now validates/maps the MMIO
 resources through Dxgkrnl without accessing registers. It only registers
 AddDevice/StartDevice/StopDevice/RemoveDevice; it is not a loadable or usable
-WDDM adapter and is not staged or installed. The next KMD work is to implement
-query/capability and render DDIs before hardware initialization.
+WDDM adapter and is not staged or installed. Its QueryAdapterInfo currently
+reports WDDM 2.7, but this is prototype metadata only and does not implement a
+valid render-only driver type for the target OS. Do not install it. The next
+step is to settle the WDDM 3.1 full-graphics callback/UMD contract before
+changing the advertised caps or adding submit/interrupt callbacks.
 
 `NegroniGpuFirmware.c` now provides allocation-free parsers for the Qualcomm
 GMU block stream and the A730 ZAP ELF32 manifest. It rejects truncated blocks,
