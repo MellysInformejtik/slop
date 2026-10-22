@@ -1,6 +1,6 @@
 #!/bin/bash
 # A fresh, complete iOS 16.7.16 root for the negroni userdata partition, from the iPhone X IPSW:
-# every app and daemon Apple ships (no debloat, no Sileo), the setup assistant skipped and the
+# every app and daemon Apple ships (no debloat), Procursus + Sileo, the setup assistant skipped and the
 # bring-up changes that let it boot (tools/sweet-root-tweaks.py). Output: OUT.img and OUT.simg.
 #
 #   sudo negroni-ios/tools/build-ios16-root.sh [OUT]     (default ~/ios-work/ios16-root-full.img)
@@ -58,7 +58,11 @@ umount "$mnt"
 trap - EXIT
 fsck.hfsplus -fy "$out" | grep -v 'Illegal name' || true
 
-# 4. sparse image for fastboot
+# 4. Procursus + Sileo (add-sileo-root.sh; Sileo is registered only once
+#    /var/jb/var/negroni-no-uicache is deleted)
+bash "$repo/negroni-ios/tools/add-sileo-root.sh" "$out"
+
+# 5. sparse image for fastboot
 img2simg "$out" "${out%.img}.simg"
 chown "$U:$U" "$out" "${out%.img}.simg"
 ls -la "$out" "${out%.img}.simg"

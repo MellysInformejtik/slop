@@ -46,6 +46,7 @@ chown -R 501:501 "$P/var/mobile" "$P/var/lib/apt/sileolists"
 { tar -xOf "$J/sileo/control.tar" ./control | sed '/^$/d'; printf 'Status: install ok installed\n\n'; } \
 	>> "$P/Library/dpkg/status"
 
+touch "$P/var/negroni-no-uicache"
 cat > "$P/negroni-jb.sh" <<'EOF'
 #!/var/jb/bin/sh
 # com.negroni.jbprep: bootstrap preparation once, then register the prefix's applications.
@@ -54,6 +55,7 @@ if [ -e /var/jb/prep_bootstrap.sh ]; then
 	NO_PASSWORD_PROMPT=1 /var/jb/bin/sh /var/jb/prep_bootstrap.sh
 fi
 /var/jb/usr/sbin/pwd_mkdb -p /var/jb/etc/master.passwd >/dev/null 2>&1
+[ -e /var/jb/var/negroni-no-uicache ] && exit 0
 sleep 40                                    # LaunchServices is not ready right after SpringBoard
 /var/jb/usr/bin/uicache -p /var/jb/Applications/Sileo.app
 EOF
@@ -75,12 +77,10 @@ jobs['/System/Library/LaunchDaemons/com.negroni.jbprep.plist'] = {
     'StandardOutPath': '/var/jb/var/log/negroni-jb.log',
     'StandardErrorPath': '/var/jb/var/log/negroni-jb.log',
 }
-gone = [k for k, j in jobs.items() if j.get('Label') in ('com.apple.bluetoothd', 'com.apple.fairplayd.H2')]
-for k in gone:
-    del jobs[k]
+gone = []
 plistlib.dump(d, open(p, 'wb'), fmt=plistlib.FMT_BINARY)
 os.chown(p, st.st_uid, st.st_gid); os.chmod(p, st.st_mode & 0o7777)
-print('launchd.plist: com.negroni.jbprep added;', len(gone), 'crash-looping jobs removed;', len(jobs), 'jobs')
+print('launchd.plist: com.negroni.jbprep added;', len(jobs), 'jobs')
 EOF
 df -h "$mnt" | tail -1
 sync
