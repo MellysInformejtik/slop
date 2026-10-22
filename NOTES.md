@@ -645,3 +645,7 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Committed this checkpoint as `fbbd8f6` (`add Negroni A730 resource probe`). Working tree is clean except pre-existing unrelated untracked `tools/replace-winpe-wim.py`.
 
 - ACPI source validation follow-up: compiled `GpuSsdt.asl` using ACPICA iasl 20251212 from a temporary extracted Ubuntu package. Result: 191-byte AML, 0 errors/warnings/remarks. Generated AML/hex were removed from the source tree after validation; full Mu/EDK build and firmware-table coexistence remain untested.
+
+### WDDM architecture decision
+- Target is a render-only WDDM adapter, leaving Basic Display / firmware framebuffer as the system display path. Microsoft documents render-only devices as WDDM 1.2+ with no VidPN source/target; an MCDM compute-only path does not meet graphics rendering. See `windows/NegroniGpu/README.md` and Microsoft WDDM capability documentation: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/wddm-driver-and-feature-caps
+- This is the architecture decision only. Current code is still the KMDF resource probe, not a WDDM KMD. Next implementation is a distinct `DRIVER_INITIALIZATION_DATA`/`DxgkInitialize` miniport with render DDIs; no GPU device has been installed or claimed working.

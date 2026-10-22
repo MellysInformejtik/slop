@@ -31,12 +31,32 @@ staged; this project does not change the phone or its Windows image.
 
 1. Define and review the ACPI resource contract for the SM8450 GPU; keep the
    existing framebuffer boot path available for recovery.
-2. Build a test-signed ARM64 WDDM KMD that enumerates without powering the GPU,
-   then add a guarded hardware-start path using the proven Negroni sequence.
+2. Build a test-signed ARM64 **render-only WDDM KMD** that enumerates without
+   powering the GPU, then add a guarded hardware-start path using the proven
+   Negroni sequence. Leave the system display on its existing Basic Display /
+   firmware framebuffer path; do not bind the A730 as the boot display adapter.
 3. Validate firmware loading, power/clock votes, GMU/HFI, SMMU mappings, and a
    bounded CP submit/fence test before exposing render acceleration.
 4. Add a Mesa Freedreno D3D10 user-mode driver and a WDDM winsys, then test
    simple clear/copy/draw before allowing DWM to use the GPU.
+
+## WDDM direction
+
+The first acceleration target is a render-only WDDM adapter. Windows 11 23H2
+supports the required model, and Microsoft documents render-only adapters as
+having no VidPN sources/targets. This keeps the A730 separate from the existing
+display device and preserves Basic Display as the recovery path. The stage-0
+KMDF probe is only a resource-contract diagnostic; it is not the WDDM KMD and
+must not be treated as an installable graphics driver. A compute-only MCDM
+prototype is not the target because this port needs graphics rendering, not
+only compute.
+
+The real KMD must use `DRIVER_INITIALIZATION_DATA`/`DxgkInitialize` and implement
+the render-specific WDDM DDIs, including allocation, paging, context, command
+submission, interrupt/fence, reset, and timeout paths. The UMD must speak the
+Windows D3D runtime ABI and submit work through that KMD. No such KMD or UMD has
+been implemented yet; the next coding step is a separate render-only miniport
+project, not expansion of the KMDF probe.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
