@@ -62,6 +62,14 @@ AddDevice/StartDevice/StopDevice/RemoveDevice; it is not a loadable or usable
 WDDM adapter and is not staged or installed. The next KMD work is to implement
 query/capability and render DDIs before hardware initialization.
 
+`NegroniGpuFirmware.c` now provides allocation-free parsers for the Qualcomm
+GMU block stream and the A730 ZAP ELF32 manifest. It rejects truncated blocks,
+out-of-range GMU writes, malformed program-header tables, integer overflow,
+and ZAP images larger than the phone's 8 KiB protected region. The parser is
+compiled into the ARM64 prototype and has host ASan/UBSan tests using synthetic
+valid and malformed input. It is not yet connected to a package-file loader or
+TrustZone call, and no real firmware image has been validated with it.
+
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
 private firmware dumps out of git.
