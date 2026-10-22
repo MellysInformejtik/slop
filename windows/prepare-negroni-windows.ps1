@@ -1,5 +1,5 @@
 # Prepare the Windows installed on the phone, offline, while Mu exposes its storage over USB (mass storage):
-#   - skip the whole first-run setup: local account "User" (no password), auto logon (windows\unattend-negroni.xml)
+#   - skip the whole first-run setup: local account "paw" (no password), auto logon (windows\unattend-negroni.xml)
 #   - BypassNRO in case a network page still shows
 #   - test signing on, in the BCD of the phone's EFI partition
 #   - the OnePlus touch driver (NegroniTouch, test-signed catalog) added to the image

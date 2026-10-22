@@ -21,7 +21,7 @@
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
-            <Name>User</Name>
+            <Name>paw</Name>
             <Group>Administrators</Group>
             <Password>
               <Value></Value>
@@ -32,7 +32,7 @@
       </UserAccounts>
       <AutoLogon>
         <Enabled>true</Enabled>
-        <Username>User</Username>
+        <Username>paw</Username>
         <Password>
           <Value></Value>
           <PlainText>true</PlainText>
