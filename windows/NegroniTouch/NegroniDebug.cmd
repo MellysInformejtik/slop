@@ -27,6 +27,8 @@ exit /b
 
 :collect
 ver
+echo ==== Package trust ====
+if exist "%SystemRoot%\System32\NegroniTouch\TrustTouch.exe" "%SystemRoot%\System32\NegroniTouch\TrustTouch.exe"
 echo ==== Touch driver load ====
 drvload "%SystemRoot%\System32\NegroniTouch\NegroniTouch.inf" > "%SystemDrive%\NegroniTouch-debug-load.txt" 2>&1
 type "%SystemDrive%\NegroniTouch-debug-load.txt"
@@ -45,4 +47,6 @@ pnputil /enum-devices /class USB
 reg query HKLM\SYSTEM\CurrentControlSet\Enum\USB /s
 echo ==== Touch state after enumeration ====
 reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch
+echo ==== Driver installation log ====
+type "%SystemRoot%\inf\setupapi.dev.log"
 exit /b

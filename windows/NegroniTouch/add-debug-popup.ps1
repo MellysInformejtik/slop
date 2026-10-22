@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Wim = 'C:\Users\paw\Downloads\BYDJPE-V1.1\sources\boot.wim')
+param([string]$Wim = 'C:\Users\paw\Downloads\BYDJPE-V1.1\sources\boot.wim', [string]$DriverPackage)
 $ErrorActionPreference = 'Stop'
 $tool = Join-Path $PSScriptRoot 'out\wimlib-1.14.5\wimlib-imagex.exe'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -28,6 +28,13 @@ Copy-Item -LiteralPath $Wim -Destination $backup
 $commands = @('winpeshl.ini', 'NegroniDebug.cmd', 'NegroniDebugLaunch.cmd') | ForEach-Object {
     "add '$(Join-Path $work $_)' '/Windows/System32/$_'"
 }
+if ($DriverPackage) {
+    foreach ($name in @('NegroniTouch.inf','NegroniTouch.sys','negronitouch.cat','NegroniTouch.cer','TrustTouch.exe')) {
+        $source = Join-Path $DriverPackage $name
+        if (-not (Test-Path -LiteralPath $source)) { throw "Missing package file: $source" }
+        $commands += "add '$source' '/Windows/System32/NegroniTouch/$name'"
+    }
+}
 $commands | & $tool update $Wim 1
 if ($LASTEXITCODE -ne 0) { throw "WIM update failed; backup is $backup" }
 & $tool verify $Wim
@@ -39,6 +46,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot extract updated files' }
 foreach ($name in @('winpeshl.ini', 'NegroniDebug.cmd', 'NegroniDebugLaunch.cmd')) {
     if ((Get-FileHash (Join-Path $work $name)).Hash -ne (Get-FileHash (Join-Path $verify $name)).Hash) {
         throw "Verification mismatch: $name"
+    }
+}
+if ($DriverPackage) {
+    foreach ($name in @('NegroniTouch.inf','NegroniTouch.sys','negronitouch.cat','NegroniTouch.cer','TrustTouch.exe')) {
+        & $tool extract $Wim 1 "/Windows/System32/NegroniTouch/$name" "--dest-dir=$verify" --no-acls
+        if ($LASTEXITCODE -ne 0) { throw "Cannot verify $name" }
+        if ((Get-FileHash (Join-Path $DriverPackage $name)).Hash -ne (Get-FileHash (Join-Path $verify $name)).Hash) {
+            throw "Package verification mismatch: $name"
+        }
     }
 }
 Write-Host "Backup: $backup"
