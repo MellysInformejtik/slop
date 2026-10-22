@@ -4,6 +4,8 @@
 // The callback table is incomplete for a usable adapter and must not be staged.
 #include <ntddk.h>
 #include <dispmprt.h>
+#include "NegroniGpuFirmware.h"
+#include "NegroniGpuFirmwareIo.h"
 
 #define NEGRONI_GPU_TAG 'gNgN'
 #define NEGRONI_GPU_RANGE_COUNT 7
@@ -19,6 +21,17 @@ typedef struct _NEGRONI_GPU_ADAPTER {
     DXGKRNL_INTERFACE Dxgk;
     ULONG RangeCount;
     NEGRONI_GPU_RANGE Ranges[NEGRONI_GPU_RANGE_COUNT];
+    PVOID GmuFirmware;
+    ULONG GmuFirmwareLength;
+    NG_GMU_FW_BLOCK GmuBlocks[NG_GMU_FW_MAX_BLOCKS];
+    size_t GmuBlockCount;
+    PVOID SqeFirmware;
+    ULONG SqeFirmwareLength;
+    PVOID ZapManifest;
+    ULONG ZapManifestLength;
+    NG_ZAP_FW_IMAGE ZapImage;
+    PVOID ZapSegments[NG_ZAP_FW_MAX_SEGMENTS];
+    ULONG ZapSegmentLengths[NG_ZAP_FW_MAX_SEGMENTS];
     BOOLEAN Started;
 } NEGRONI_GPU_ADAPTER;
 
@@ -28,6 +41,100 @@ static const NEGRONI_GPU_RANGE ExpectedRanges[NEGRONI_GPU_RANGE_COUNT] = {
     { 0x03d50000, 0x10000, NULL }, { 0x03da0000, 0x40000, NULL },
     { 0x0b290000, 0x10000, NULL }, { 0x03d61000, 0x00800, NULL },
 };
+
+static VOID
+NegroniGpuFreeFirmware(NEGRONI_GPU_ADAPTER *Adapter)
+{
+    ULONG i;
+    if (Adapter->GmuFirmware != NULL)
+        ExFreePoolWithTag(Adapter->GmuFirmware, 'fNgN');
+    if (Adapter->SqeFirmware != NULL)
+        ExFreePoolWithTag(Adapter->SqeFirmware, 'fNgN');
+    if (Adapter->ZapManifest != NULL)
+        ExFreePoolWithTag(Adapter->ZapManifest, 'fNgN');
+    for (i = 0; i < NG_ZAP_FW_MAX_SEGMENTS; ++i) {
+        if (Adapter->ZapSegments[i] != NULL)
+            ExFreePoolWithTag(Adapter->ZapSegments[i], 'fNgN');
+        Adapter->ZapSegments[i] = NULL;
+        Adapter->ZapSegmentLengths[i] = 0;
+    }
+    Adapter->GmuFirmware = NULL;
+    Adapter->GmuFirmwareLength = 0;
+    Adapter->GmuBlockCount = 0;
+    Adapter->SqeFirmware = NULL;
+    Adapter->SqeFirmwareLength = 0;
+    Adapter->ZapManifest = NULL;
+    Adapter->ZapManifestLength = 0;
+    RtlZeroMemory(Adapter->GmuBlocks, sizeof(Adapter->GmuBlocks));
+    RtlZeroMemory(&Adapter->ZapImage, sizeof(Adapter->ZapImage));
+}
+
+static NTSTATUS
+NegroniGpuLoadFirmwarePackage(NEGRONI_GPU_ADAPTER *Adapter)
+{
+    static const PCWSTR zapNames[NG_ZAP_FW_MAX_SEGMENTS] = {
+        L"a730_zap.b00", L"a730_zap.b01", L"a730_zap.b02", L"a730_zap.b03",
+        L"a730_zap.b04", L"a730_zap.b05", L"a730_zap.b06", L"a730_zap.b07",
+        L"a730_zap.b08", L"a730_zap.b09", L"a730_zap.b10", L"a730_zap.b11",
+        L"a730_zap.b12", L"a730_zap.b13", L"a730_zap.b14", L"a730_zap.b15"
+    };
+    ULONG i;
+    NTSTATUS status;
+
+    NegroniGpuFreeFirmware(Adapter);
+    status = NgReadPackageFirmware(Adapter->Pdo, L"gmu_gen70000.bin",
+        0x00100000, &Adapter->GmuFirmware, &Adapter->GmuFirmwareLength);
+    if (!NT_SUCCESS(status))
+        goto Fail;
+    if (!NgParseGmuFirmware(Adapter->GmuFirmware, Adapter->GmuFirmwareLength,
+        Adapter->GmuBlocks, RTL_NUMBER_OF(Adapter->GmuBlocks),
+        &Adapter->GmuBlockCount)) {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+        goto Fail;
+    }
+
+    status = NgReadPackageFirmware(Adapter->Pdo, L"a730_sqe.fw",
+        0x00100000, &Adapter->SqeFirmware, &Adapter->SqeFirmwareLength);
+    if (!NT_SUCCESS(status))
+        goto Fail;
+    status = NgReadPackageFirmware(Adapter->Pdo, L"a730_zap.mdt",
+        PAGE_SIZE, &Adapter->ZapManifest, &Adapter->ZapManifestLength);
+    if (!NT_SUCCESS(status))
+        goto Fail;
+    if (!NgParseZapManifest(Adapter->ZapManifest, Adapter->ZapManifestLength,
+        &Adapter->ZapImage)) {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+        goto Fail;
+    }
+
+    for (i = 0; i < Adapter->ZapImage.SegmentCount; ++i) {
+        ULONG index = Adapter->ZapImage.Segments[i].Index;
+        if (index >= RTL_NUMBER_OF(zapNames)) {
+            status = STATUS_DEVICE_CONFIGURATION_ERROR;
+            goto Fail;
+        }
+        status = NgReadPackageFirmware(Adapter->Pdo, zapNames[index],
+            NG_ZAP_FW_MAX_SPAN, &Adapter->ZapSegments[index],
+            &Adapter->ZapSegmentLengths[index]);
+        if (!NT_SUCCESS(status))
+            goto Fail;
+        if (Adapter->ZapSegmentLengths[index] <
+            Adapter->ZapImage.Segments[i].FileSize) {
+            status = STATUS_DEVICE_CONFIGURATION_ERROR;
+            goto Fail;
+        }
+    }
+
+    DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+        "NegroniGpuWddm: firmware package validated (%Iu GMU blocks, %lu ZAP segments, span %#x); GPU untouched\n",
+        Adapter->GmuBlockCount, Adapter->ZapImage.SegmentCount,
+        Adapter->ZapImage.SpanSize);
+    return STATUS_SUCCESS;
+
+Fail:
+    NegroniGpuFreeFirmware(Adapter);
+    return status;
+}
 
 static VOID
 NegroniGpuUnmapRanges(NEGRONI_GPU_ADAPTER *Adapter)
@@ -40,6 +147,7 @@ NegroniGpuUnmapRanges(NEGRONI_GPU_ADAPTER *Adapter)
             Adapter->Ranges[i].Mapping = NULL;
         }
     }
+    NegroniGpuFreeFirmware(Adapter);
     Adapter->RangeCount = 0;
     Adapter->Started = FALSE;
 }
@@ -135,9 +243,14 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
         NegroniGpuUnmapRanges(adapter);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
+    status = NegroniGpuLoadFirmwarePackage(adapter);
+    if (!NT_SUCCESS(status)) {
+        NegroniGpuUnmapRanges(adapter);
+        return status;
+    }
     adapter->Started = TRUE;
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
-               "NegroniGpuWddm: WDDM 2.7 render-only resource map ready; GPU registers untouched\n");
+               "NegroniGpuWddm: WDDM 2.7 resource and firmware package ready; GPU registers untouched\n");
     return STATUS_SUCCESS;
 }
 

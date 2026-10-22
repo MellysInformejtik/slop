@@ -70,8 +70,12 @@ compiled into the ARM64 prototype and has host ASan/UBSan tests using synthetic
 valid and malformed input. It also validates the target phone's local firmware
 copies in `/home/paw/ios-work/negroni-firmware/gpu`: four GMU blocks, one ZAP
 load segment, and the corresponding `.bNN` payload size. These private blobs
-remain outside git. The parser is not yet connected to a package-file loader or
-TrustZone call.
+remain outside git. `NegroniGpuFirmwareIo.c` reads files relative to a
+`FirmwareDirectory` string in the device's PnP hardware key, using the package
+path supplied by the INF rather than a hardcoded Driver Store path. StartDevice
+validates and retains the GMU image, SQE image, ZAP manifest, and segment files;
+StopDevice/RemoveDevice release them. No INF currently creates that key value,
+and there is still no TrustZone call or GPU register access. This is build-only.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
