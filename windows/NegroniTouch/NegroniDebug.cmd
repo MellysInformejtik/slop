@@ -8,12 +8,19 @@ call :collect > "%DBG%" 2>&1
 cls
 echo ONEPLUS TOUCH AND USB - diagnostic console
 echo.
+if exist "%SystemDrive%\NegroniTouch-trust.txt" type "%SystemDrive%\NegroniTouch-trust.txt"
 type "%SystemDrive%\NegroniTouch-debug-load.txt"
 echo.
-reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch
-echo.
-echo USB host service:
-sc query USBXHCI
+echo ---- touch device (ACPI\NEGT0001) ----
+pnputil /enum-devices /deviceid "ACPI\NEGT0001"
+echo ---- driver service ----
+sc query NegroniTouch | findstr /i "STATE WIN32_EXIT SERVICE_EXIT"
+reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch /v Stage
+reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch /v Status
+reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch /v Detail
+reg query HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch\Enum
+echo ---- vhf ----
+sc query vhf | findstr /i "STATE"
 echo.
 echo Full report: %DBG%
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do if exist "%%d:\sources\boot.wim" (
@@ -28,7 +35,8 @@ exit /b
 :collect
 ver
 echo ==== Package trust ====
-if exist "%SystemRoot%\System32\NegroniTouch\TrustTouch.exe" "%SystemRoot%\System32\NegroniTouch\TrustTouch.exe"
+if exist "%SystemRoot%\System32\NegroniTouch\TrustTouch.exe" "%SystemRoot%\System32\NegroniTouch\TrustTouch.exe" > "%SystemDrive%\NegroniTouch-trust.txt" 2>&1
+if exist "%SystemDrive%\NegroniTouch-trust.txt" type "%SystemDrive%\NegroniTouch-trust.txt"
 echo ==== Touch driver load ====
 drvload "%SystemRoot%\System32\NegroniTouch\NegroniTouch.inf" > "%SystemDrive%\NegroniTouch-debug-load.txt" 2>&1
 type "%SystemDrive%\NegroniTouch-debug-load.txt"
