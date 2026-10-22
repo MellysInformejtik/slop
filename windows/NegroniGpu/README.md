@@ -67,8 +67,11 @@ GMU block stream and the A730 ZAP ELF32 manifest. It rejects truncated blocks,
 out-of-range GMU writes, malformed program-header tables, integer overflow,
 and ZAP images larger than the phone's 8 KiB protected region. The parser is
 compiled into the ARM64 prototype and has host ASan/UBSan tests using synthetic
-valid and malformed input. It is not yet connected to a package-file loader or
-TrustZone call, and no real firmware image has been validated with it.
+valid and malformed input. It also validates the target phone's local firmware
+copies in `/home/paw/ios-work/negroni-firmware/gpu`: four GMU blocks, one ZAP
+load segment, and the corresponding `.bNN` payload size. These private blobs
+remain outside git. The parser is not yet connected to a package-file loader or
+TrustZone call.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
