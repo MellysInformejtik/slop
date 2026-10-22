@@ -3,8 +3,9 @@
 # (OrangeFox has no hfsplus, so the root cannot be edited on the phone). Layout as a rootless jailbreak:
 # /private/preboot/procursus with /private/var/jb -> it (LaunchServices registers apps from there, not from
 # /private/var). A launchd job com.negroni.jbprep runs the bootstrap's
-# preparation once and registers Sileo.app with uicache at every boot. Also drops the bluetoothd and
-# fairplayd jobs, which crash-loop here (no Bluetooth, no SEP).
+# preparation once and registers Sileo.app with uicache at every boot, unless
+# /var/jb/var/negroni-no-uicache exists (shipped: the registration is suspected of crashing
+# SpringBoard; delete the file to register Sileo). No launchd job is removed.
 #
 #   sudo negroni-ios/tools/add-sileo-root.sh [~/ios-work/ios16-root.img]
 #
