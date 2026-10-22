@@ -35,7 +35,10 @@ jobs:
     steps:
       - name: Tools
         run: |
-          brew install meson ninja llvm
+          brew install meson ninja llvm bison flex
+          # macOS ships bison 2.3; Mesa's ir3 grammar needs a current one
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" -q install mako pyyaml packaging
           xcrun --sdk iphoneos --show-sdk-path
