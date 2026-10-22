@@ -722,3 +722,14 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Mu fork b474353a: NegroniWindowsFirstDxe (protocol notify on SimpleFileSystem) puts a "Windows Boot Manager"
   Boot#### (\EFI\Microsoft\Boot\bootmgfw.efi) first in BootOrder; UniXNU stays in the boot menu.
 - Mu fork: UsbPwrCtrlDxe + UsbConfigDxe re-added (were lost, mass storage broke). Image boot_a-windows-keys.img rebuilt; untested.
+
+## 2026-10-22 Windows Wi-Fi: PCIe0 bring-up (Mu)
+- Mu fork bcd7074d: NegroniPcieDxe. GPIO80 (WLAN_EN) high, PERST GPIO94, gcc_pcie_0_gdsc + clocks via ClockDxe,
+  controller init per Linux qcom_pcie_init_2_7_0, PHY = Linux sm8450 gen3x1 tables (76 writes, NegroniPciePhy.h),
+  root port class 0604 bus 0->1, iATU0 CFG0 0x60100000 -> bus 1 (ECAM layout), iATU1 MEM 0x60300000-0x63ffffff,
+  LTSSM, expects 17cb:1103 on bus 1. Prints NPCIE: lines, pauses 5 s.
+- Test image ~/ios-work/winpe/boot_a-pcie-test.img (sha 6a739b72…), NOT flashed. boot_a-windows-keys.img is
+  the last known-good-ish image (no PCIe driver).
+- Guess, unverified: QCA6490 rails (pm8350 s10/s11/s12, pm8350c s1, pmr735a s2) and PHY rails l5b/l6b are already on
+  in UEFI (l5b/l6b are shared with the UFS PHY).
+- Next: ACPI PCI0 (+MCFG) in a negroni SSDT, from lemonade DSDT PCI0 (no PEP/QPPX _DEP), then qcwlan8350.
