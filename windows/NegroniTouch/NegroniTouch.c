@@ -116,6 +116,24 @@ static int NtI2cWrite(void *context, const uint8_t *buf, uint32_t len) {
 	return ctx->UseGpio ? gpio_i2c_write(&ctx->GpioI2c, S3908_ADDR, buf, len) :
 		geni_i2c_write(&ctx->I2c, S3908_ADDR, buf, len);
 }
+/*
+ * Status trace for WinPE, where no debugger is attached: each stage writes DWORDs under
+ * HKLM\SYSTEM\CurrentControlSet\Services\NegroniTouch (Stage, Status, Detail), which
+ * startnet.cmd copies to the userdata FAT volume. Stage: 1 DriverEntry, 2 AddDevice,
+ * 3 VhfCreate, 4 PrepareHardware, 5 resources, 6 GENI init (Detail = rc), 7 report config
+ * (Detail = rc), 8 VhfStart, 9 running.
+ */
+static void NtTrace(ULONG stage, NTSTATUS status, ULONG detail)
+{
+	ULONG v;
+
+	v = stage;
+	RtlWriteRegistryValue(RTL_REGISTRY_SERVICES, L"NegroniTouch", L"Stage", REG_DWORD, &v, sizeof(v));
+	v = (ULONG)status;
+	RtlWriteRegistryValue(RTL_REGISTRY_SERVICES, L"NegroniTouch", L"Status", REG_DWORD, &v, sizeof(v));
+	RtlWriteRegistryValue(RTL_REGISTRY_SERVICES, L"NegroniTouch", L"Detail", REG_DWORD, &detail, sizeof(detail));
+}
+
 static void NtWaitUs(unsigned us) { KeStallExecutionProcessor(us); }
 static void NtWait1ms(void) { KeStallExecutionProcessor(1000); }
 
@@ -128,8 +146,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
 	WDF_DRIVER_CONFIG config;
 
+	NTSTATUS status;
+
 	WDF_DRIVER_CONFIG_INIT(&config, NtDeviceAdd);
-	return WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
+	status = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
+	NtTrace(1, status, 0);
+	return status;
 }
 
 NTSTATUS NtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
@@ -143,6 +165,7 @@ NTSTATUS NtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 	NTSTATUS status;
 
 	UNREFERENCED_PARAMETER(Driver);
+	NtTrace(2, STATUS_SUCCESS, 0);
 	WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnp);
 	pnp.EvtDevicePrepareHardware = NtPrepareHardware;
 	pnp.EvtDeviceReleaseHardware = NtReleaseHardware;
@@ -172,7 +195,9 @@ NTSTATUS NtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
 	vhfConfig.VendorID = 0x06CB;		/* Synaptics */
 	vhfConfig.ProductID = 0x3908;
 	vhfConfig.EvtVhfAsyncOperationGetFeature = NtGetFeature;
-	return VhfCreate(&vhfConfig, &ctx->Vhf);	/* started in NtPrepareHardware, once the S3908 answers */
+	status = VhfCreate(&vhfConfig, &ctx->Vhf);	/* started in NtPrepareHardware, once the S3908 answers */
+	NtTrace(3, status, 0);
+	return status;
 }
 
 NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Translated)
@@ -181,6 +206,7 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 	ULONG n = WdfCmResourceListGetCount(Translated), mem = 0;
 
 	UNREFERENCED_PARAMETER(Raw);
+	NtTrace(4, STATUS_SUCCESS, n);
 	for (ULONG i = 0; i < n; i++) {
 		PCM_PARTIAL_RESOURCE_DESCRIPTOR d = WdfCmResourceListGetDescriptor(Translated, i);
 		PVOID va;
@@ -188,8 +214,10 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 		if (d->Type != CmResourceTypeMemory)
 			continue;
 		va = MmMapIoSpaceEx(d->u.Memory.Start, d->u.Memory.Length, PAGE_READWRITE | PAGE_NOCACHE);
-		if (!va)
+		if (!va) {
+			NtTrace(5, STATUS_INSUFFICIENT_RESOURCES, mem);
 			return STATUS_INSUFFICIENT_RESOURCES;
+		}
 		if (mem == 0) {
 			ctx->Se = va;
 			ctx->SeLength = d->u.Memory.Length;
@@ -204,6 +232,7 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 		}
 		mem++;
 	}
+	NtTrace(5, STATUS_SUCCESS, mem | (ctx->GpioPins.pins ? 0x100 : 0));
 	if (!ctx->Se || !ctx->GpioPage)
 		return STATUS_DEVICE_CONFIGURATION_ERROR;
 
@@ -211,12 +240,14 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 	ctx->I2c.polls = 200000;
 	int initRc = geni_i2c_init(&ctx->I2c);
 	ctx->UseGpio = initRc == GENI_I2C_FIFO_DISABLED;
+	NtTrace(6, STATUS_SUCCESS, (ULONG)initRc);
 	if (ctx->UseGpio && ctx->GpioPins.pins) {
 		tlmm_i2c_init(&ctx->GpioI2c, &ctx->GpioPins, NtWaitUs);
 		KdPrint(("NegroniTouch: using open-drain GPIO16/17 I2C fallback\n"));
 	} else if (initRc != GENI_I2C_OK) {
 		KdPrint(("NegroniTouch: SE4 init %d proto %u IF_DISABLE 0x%x; -5 requires GPI DMA\n",
 			initRc, geni_i2c_proto(&ctx->I2c), geni_rd(&ctx->I2c, GENI_IF_DISABLE_RO)));
+		NtTrace(6, STATUS_DEVICE_CONFIGURATION_ERROR, (ULONG)initRc);
 		return STATUS_DEVICE_CONFIGURATION_ERROR;
 	}
 	ctx->Tcm.io.ctx = ctx;
@@ -226,14 +257,18 @@ NTSTATUS NtPrepareHardware(WDFDEVICE Device, WDFCMRESLIST Raw, WDFCMRESLIST Tran
 	for (int i = 0; i < 16 && tcm_read_message(&ctx->Tcm) == 0; i++)
 		;
 	int configRc = tcm_get_report_config(&ctx->Tcm, NtWait1ms);
+	NtTrace(7, STATUS_SUCCESS, (ULONG)configRc | ((ULONG)ctx->Tcm.transport_error << 16));
 	if (configRc != 0) {
 		KdPrint(("NegroniTouch: config rc %d bus %d header %02x %02x %02x %02x\n",
 			configRc, ctx->Tcm.transport_error, ctx->Tcm.header[0], ctx->Tcm.header[1],
 			ctx->Tcm.header[2], ctx->Tcm.header[3]));
+		NtTrace(7, STATUS_DEVICE_NOT_READY, (ULONG)configRc | ((ULONG)ctx->Tcm.transport_error << 16));
 		return STATUS_DEVICE_NOT_READY;
 	}
 	ctx->Ready = TRUE;
-	return VhfStart(ctx->Vhf);
+	NTSTATUS status = VhfStart(ctx->Vhf);
+	NtTrace(status == STATUS_SUCCESS ? 9 : 8, status, 0);
+	return status;
 }
 
 NTSTATUS NtReleaseHardware(WDFDEVICE Device, WDFCMRESLIST Translated)
