@@ -74,13 +74,21 @@ remain outside git. `NegroniGpuFirmwareIo.c` reads files relative to a
 `FirmwareDirectory` string in the device's PnP hardware key, using the package
 path supplied by the INF rather than a hardcoded Driver Store path. StartDevice
 validates and retains the GMU image, SQE image, ZAP manifest, and segment files;
-StopDevice/RemoveDevice release them. No INF currently creates that key value,
-so this is build-only. After package validation, StartDevice has a read-only
+StopDevice/RemoveDevice release them. The experimental INF now creates that
+key value and an offline package is validated below. After package validation, StartDevice has a read-only
 power-state preflight: it reads the GCC GPU AHB status, and only if that clock
 is on does it read GPUCC state; it reads the GMU counter only when CX and the
 GMU clock report on. Every access is range/alignment checked, and this path
 does not power the GPU, call TrustZone, or write registers. It does not enable
 rendering.
+
+`NegroniGpuPm4.c` encodes bounded A7xx type-7 command and type-4 register-write
+packets, including the odd-parity fields confirmed in the XNU CP bring-up. Its
+host tests check exact CP_ME_INIT and type-4 headers, parity, payload copies,
+and rejection of invalid opcodes/registers and undersized output. It is linked
+into the ARM64 prototype but is not yet connected to a command ring or WDDM
+submission DDI. Run `test-host.sh` in WSL; it runs both this suite and the
+firmware parser tests under ASan/UBSan against the local phone blobs.
 
 Do not install an A610 driver pack on this phone or change the boot display
 path until the recovery path and GPU-off behavior have been tested. Keep
@@ -93,14 +101,14 @@ platform device and its seven non-overlapping MMIO windows. The ranges match the
 SM8450 DTB and the XNU A730 bring-up sources. `windows/NegroniGpu/NegroniGpuProbe.c`
 is a native ARM64 KMDF resource-validation probe: it checks those translated
 addresses and lengths without mapping registers, requesting power, or changing
-display ownership. `NegroniGpuWddm.c` is an incomplete render-only WDDM miniport
-prototype that obtains the translated resources using `DxgkCbGetDeviceInformation`
-and maps them using `DxgkCbMapMemory`; it performs no register access and has no
-render DDIs. Its QueryAdapterInfo callback only returns the supported WDDM 2.7
-interface version for the OS's pre-start `WDDMDEVICECAPS` query; it deliberately
-does not return `DRIVERCAPS` or claim render support. Both binaries compile for
-ARM64 with the installed WDK, but neither
-is staged or installed. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
+display ownership. `NegroniGpuWddm.c` is an incomplete WDDM miniport prototype
+that obtains translated resources using `DxgkCbGetDeviceInformation`, maps them
+using `DxgkCbMapMemory`, validates the offline firmware package, and performs a
+read-only power-state preflight. It has no render DDIs. Its QueryAdapterInfo
+callback only returns WDDM 2.7 for the pre-start `WDDMDEVICECAPS` query; it
+does not return `DRIVERCAPS` or claim render support. The ARM64 KMD and offline
+INF package build, but the package is explicitly marked DO NOT INSTALL and has
+not been installed or booted. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is
 verified. `GpuSsdt.asl` compiled cleanly with ACPICA iasl 20251212 (latest
 seven-window AML is validated after the GCC clock aperture was added. The GCC
 range (0x00100000/0x1f4200) matches the XNU bring-up map and contains the GPU
