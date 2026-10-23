@@ -835,3 +835,10 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   without NegroniPcieDxe. Signed package windows/NegroniGpu/out/package (cat e1b53851…, sys fdf79a5f…). The KMD
   only loads, maps its windows, validates firmware and reads the GPU power state; no render path. Recovery if
   Windows boot-loops: mass storage, offline SYSTEM hive, Services\NegroniGpuWddm Start=4.
+- **2026-10-23 Windows Wi-Fi: PCIe0 LINK UP under Mu, QCA6490 17cb:1103 answers** (user, Wi-Fi diagnostics entry).
+  Mu fork (local, not pushed after ff4efe42): PARF_SLV_ADDR_SPACE_SIZE_V2/_HI (0/0x80000000; without it DBI,
+  iATU and bus 1 read ffffffff and the "link up" was fake), wcn6855 power order with XO clock GPIO204, RPMh
+  votes from apps RSC DRV2 TCS 2 for smpb10 1800 / smpb11 966 / smpb12 1350 / smpc1 1900 / smpe2 1012 mV
+  (cmd-db addresses; before them SW_CTRL 0, LTSSM stuck in Detect). Image ~/ios-work/winpe/
+  boot_a-windows-wifidiag.img (294976d9…), also touch reports only real changes + SWM errors-only (lag fix).
+  The iOS patch 0120 lacks all three fixes. Next: ACPI PCI0 + MCFG, then qcwlan8350 + bdwlan.
