@@ -7,6 +7,10 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -fno-omit-frame-pointer NegroniGpuAbi.c test-abi.c -o "$tmp/test-abi"
+"$tmp/test-abi"
+
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -fno-omit-frame-pointer NegroniGpuPm4.c test-pm4.c -o "$tmp/test-pm4"
 "$tmp/test-pm4"
 

@@ -1,7 +1,7 @@
 # Negroni Adreno 730 for Windows ARM64
 
-Status: experimental ACPI source and incomplete WDDM miniport prototype built;
-no usable Windows GPU driver has been built or installed.
+Status: experimental ACPI, incomplete WDDM miniport and native ARM64 user-mode
+transport built; no usable Windows GPU driver has been built or installed.
 
 Target: Windows 11 ARM64 23H2 (22631.7584) on the OnePlus 10 Pro, SM8450,
 Adreno 730. The current Windows install has only the NegroniTouch package
@@ -64,8 +64,9 @@ the render-specific WDDM DDIs, including allocation, paging, context, command
 submission, interrupt/fence, reset, and timeout paths. The UMD must speak the
 Windows D3D runtime ABI and submit work through that KMD. An early, deliberately
 incomplete `DRIVER_INITIALIZATION_DATA` prototype now validates/maps the MMIO
-resources through Dxgkrnl without accessing registers. It only registers
-AddDevice/StartDevice/StopDevice/RemoveDevice; it is not a loadable or usable
+resources through Dxgkrnl and gates its read-only register preflight on clock
+and power state. It registers AddDevice/StartDevice/StopDevice/RemoveDevice,
+QueryAdapterInfo and Escape; it is not a loadable or usable
 WDDM adapter and is not staged or installed. Its DDI interface version is
 WDDM 2.7 so it can use the pre-start `WDDMDEVICECAPS` query; that query now
 reports WDDM 1.3 adapter caps to match the render-only sample. This is
@@ -116,6 +117,55 @@ private firmware dumps out of git.
 
 ## Current implementation checkpoint
 
+### Native Windows user-mode transport
+
+`NegroniGpuAbi.h/.c` defines a 64-byte, pointer-free v1 query protocol.
+`DxgkDdiEscape` accepts only an adapter-level metadata query with zero escape
+flags, no device/context handle, an exact size/version/operation and zero
+reserved fields. It snapshots and validates the request before changing any
+output. It reports the **build target** A730 and whether StartDevice validated
+resources/firmware; it does not claim that the physical GPU was identified or
+that rendering works. No command execution or MMIO is exposed by this query.
+
+`NegroniGpuWinsys.c` is the first Windows user-mode transport component. It
+opens a caller-selected adapter LUID through `D3DKMTOpenAdapterFromLuid`, sends
+the query through `D3DKMTEscape`, checks the complete response and closes the
+adapter on failure. This is **not yet a Mesa Freedreno winsys or D3D UMD**:
+buffer allocation, mappings, submission, fences, Gallium integration and the
+Direct3D runtime ABI remain unimplemented. `NgGpuWinsysCanRender` returns false
+for the current protocol, including after a successful handshake.
+
+Build and test from WSL:
+
+```sh
+bash windows/NegroniGpu/test-host.sh
+bash windows/NegroniGpu/test-winsys.sh
+bash windows/NegroniGpu/build-winsys.sh
+bash windows/NegroniGpu/build-wddm-prototype.sh
+```
+
+The native x64 transport test runs on the development PC with **mock D3DKMT
+calls**. It exercises rejected opens, failed escapes, malformed replies,
+unsupported rendering claims and handle cleanup without talking to a GPU.
+The ARM64 transport archive is `out/NegroniGpuWinsys.lib`; the ARM64 diagnostic
+client is `out/winsys-probe.exe`. Without arguments the client only lists
+adapter LUIDs; with `HIGH_HEX LOW_HEX` it queries the selected prototype.
+The incomplete KMD is still not installable, so this client has not completed
+a live adapter handshake on the phone.
+
+The client uses PE console subsystem 6.02. A test executable linked with 10.00
+failed before its entry point on this PC with `0xc000007b`; relinking the same
+objects with 6.02 let the native transport tests pass. This observation is for
+the user-mode test executable; it does not establish a kernel-driver loader
+failure or lower the target from Windows 11 ARM64.
+
+Next: implement the real WDDM allocation/context/paging/submission/reset
+contracts and an authenticated GPU/SMMU ownership path, then connect a Mesa
+backend to those operations. Do not use an Escape to accept unvalidated raw
+PM4 streams or physical addresses from user mode.
+
+### Kernel resource and firmware prototype
+
 `uefi/negroni/acpi/GpuSsdt.asl` describes an experimental `QCOM0A73`
 platform device and its seven non-overlapping MMIO windows. The ranges match the Negroni
 SM8450 DTB and the XNU A730 bring-up sources. `windows/NegroniGpu/NegroniGpuProbe.c`
@@ -125,7 +175,7 @@ display ownership. `NegroniGpuWddm.c` is an incomplete WDDM miniport prototype
 that obtains translated resources using `DxgkCbGetDeviceInformation`, maps them
 using `DxgkCbMapMemory`, validates the offline firmware package, and performs a
 read-only power-state preflight. It has no render DDIs. Its QueryAdapterInfo
-callback only returns WDDM 2.7 for the pre-start `WDDMDEVICECAPS` query; it
+callback returns WDDM 1.3 for the pre-start `WDDMDEVICECAPS` query; it
 does not return `DRIVERCAPS` or claim render support. The ARM64 KMD and offline
 INF package build, but the package is explicitly marked DO NOT INSTALL and has
 not been installed or booted. Interrupts are withheld until the GIC SPI-to-ACPI GSI mapping is

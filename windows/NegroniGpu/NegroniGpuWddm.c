@@ -1,11 +1,12 @@
 // Early WDDM 2.7 DDI-interface miniport with WDDM 1.3 render-only caps.
 // This checkpoint validates/maps the ACPI MMIO resources through Dxgkrnl but
-// deliberately performs no register access, power sequencing, or submission.
+// performs only the gated read-only register preflight; no power writes/submission.
 // The callback table is incomplete for a usable adapter and must not be staged.
 #include <ntddk.h>
 #include <dispmprt.h>
 #include "NegroniGpuFirmware.h"
 #include "NegroniGpuFirmwareIo.h"
+#include "NegroniGpuAbi.h"
 
 #define NEGRONI_GPU_TAG 'gNgN'
 #define NEGRONI_GPU_RANGE_COUNT 7
@@ -240,6 +241,9 @@ NegroniGpuUnmapRanges(NEGRONI_GPU_ADAPTER *Adapter)
                                            Adapter->Ranges[i].Mapping);
             Adapter->Ranges[i].Mapping = NULL;
         }
+        /* StartDevice matches only empty slots, including after stop/failure. */
+        Adapter->Ranges[i].Start = 0;
+        Adapter->Ranges[i].Length = 0;
     }
     NegroniGpuFreeFirmware(Adapter);
     Adapter->RangeCount = 0;
@@ -374,6 +378,23 @@ NegroniGpuRemoveDevice(IN_CONST_PVOID MiniportDeviceContext)
 
 static NTSTATUS
 APIENTRY
+NegroniGpuEscape(IN_CONST_HANDLE AdapterHandle,
+                 IN_CONST_PDXGKARG_ESCAPE Escape)
+{
+    NEGRONI_GPU_ADAPTER *adapter = (NEGRONI_GPU_ADAPTER *)AdapterHandle;
+    if (adapter == NULL || Escape == NULL || Escape->Flags.Value != 0 ||
+        Escape->hDevice != NULL || Escape->hContext != NULL)
+        return STATUS_INVALID_PARAMETER;
+    /* Adapter-only metadata query: no register access or process-owned handles. */
+    if (!NgGpuHandleCapsQuery(Escape->pPrivateDriverData,
+            Escape->PrivateDriverDataSize, adapter->Started ?
+            NG_GPU_STAGE_RESOURCES_VALIDATED : NG_GPU_STAGE_NOT_STARTED))
+        return STATUS_INVALID_PARAMETER;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+APIENTRY
 NegroniGpuQueryAdapterInfo(IN_CONST_HANDLE AdapterHandle,
                            IN_CONST_PDXGKARG_QUERYADAPTERINFO Query)
 {
@@ -406,5 +427,6 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     init.DxgkDdiStopDevice = NegroniGpuStopDevice;
     init.DxgkDdiRemoveDevice = NegroniGpuRemoveDevice;
     init.DxgkDdiQueryAdapterInfo = NegroniGpuQueryAdapterInfo;
+    init.DxgkDdiEscape = NegroniGpuEscape;
     return DxgkInitialize(DriverObject, RegistryPath, &init);
 }
