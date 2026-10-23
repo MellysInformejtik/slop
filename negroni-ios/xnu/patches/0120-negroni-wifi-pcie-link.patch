@@ -1,0 +1,387 @@
+diff --git a/bsd/dev/negroni_wifi.c b/bsd/dev/negroni_wifi.c
+index efe54ad..c54f758 100644
+--- a/bsd/dev/negroni_wifi.c
++++ b/bsd/dev/negroni_wifi.c
+@@ -11,6 +11,15 @@
+  *              aon smpe2 1.012 V, dig smpb11 0.966 V, io smpb10 1.8 V, rfa1 smpc1 1.9 V,
+  *              rfa2 smpb12 1.35 V)
+  *   4  reads   PCIe0 PARF (0x1c00000) and the PHY (0x1c06000), only if CFG AHB runs: what ABL left
++ *   5  writes  GCC: the PCIe0 GDSC on, the branch votes (0x62008 bits 0-5, 0x62000 bits 11 12 19 22),
++ *              CLKREF_EN, PHY_RCHNG at 100 MHz (GPLL0 / 6), the pipe mux on XO until the PHY runs
++ *   6  writes  TLMM: PERST (94) low, WLAN_EN (80) high, the chip given 50 ms (its rails are the ones step 3
++ *              names; they are left as the firmware set them)
++ *   7  writes  the controller (Linux qcom_pcie_init_2_7_0) and the PHY (qmp_pcie_init/power_on, the
++ *              sm8450 gen3x1 tables), pipe mux to the PHY, waits for PHYSTATUS
++ *   8  writes  the root port (bridge class, bus 0 -> 1), iATU 0 bus 1 config at 0x60100000 (ECAM layout),
++ *              iATU 1 memory 0x60300000-0x63ffffff; PERST high, LTSSM on, waits for the link (DLLLA)
++ *   9  reads   bus 1 config space: the chip's vendor/device (17cb:1103), class, BAR0
+  *
+  * Addresses: sm8450.dtsi pcie@1c00000 / phy@1c06000, gcc-sm8450.c, the phone's DT.
+  */
+@@ -21,6 +30,8 @@
+ #include <pexpert/pexpert.h>
+ #include <sys/errno.h>
+ 
++#include "negroni_wifi_phy.h"
++
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void negroni_wifi_init(void);
+ extern uint32_t negroni_probe_wifi;
+@@ -51,10 +62,38 @@ uint32_t negroni_wifi_badge_color = 0x00606060;
+ #define PARF_LTSSM              0x1b0
+ #define PHY_PHYS                0x01c06000UL
+ #define PHY_SIZE                0x2000UL
++#define PARF_PM_CTRL            0x20
++#define PARF_MHI_CLOCK_RESET_CTRL 0x174
++#define PARF_AXI_MSTR_WR_ADDR_HALT_V2 0x1a8
++#define PARF_DBI_BASE_ADDR_V2   0x350
++#define PARF_DBI_BASE_ADDR_V2_HI 0x354
++#define PARF_ATU_BASE_ADDR      0x634
++#define PARF_ATU_BASE_ADDR_HI   0x638
++#define PARF_DEVICE_TYPE        0x1000
++#define DBI_PHYS                0x60000000UL
++#define DBI_SIZE                0x2000UL
++#define ATU_OFFSET              0x1000UL        /* the iATU's unrolled registers, after the DBI (sm8450.dtsi "atu") */
++#define CFG_BUS1_PHYS           0x60100000UL
++#define MEM_BASE                0x60300000UL
++#define MEM_LIMIT               0x63ffffffUL
++#define GCC_PCIE_0_BCR          0x7b000
++#define GCC_PCIE_0_PHY_BCR      0x7c01c
++#define GCC_PCIE_0_NOCSR_COM_PHY_BCR 0x7c020
++#define GCC_PCIE_0_PIPE_MUX     0x7b060         /* 0: the PHY's pipe clock, 2: XO */
++#define GCC_PCIE_0_RCHNG_RCGR   0x7b048
++#define GCC_PCIE_0_CLKREF_EN    0x9c004
++#define GCC_VOTE_0              0x62000
++#define GCC_VOTE_0_PCIE0        (1u << 11 | 1u << 12 | 1u << 19 | 1u << 22)
++#define GCC_VOTE_2              0x62008
++#define GCC_VOTE_2_PCIE0        0x3fu
++#define WLAN_EN_PIN             80
++#define PERST_PIN               94
++#define CHIP_ID                 0x110317cbu     /* 17cb:1103 */
+ 
+ static uint32_t pause_ms = 300;
+ static uint32_t step;
+-static vm_offset_t gcc, tlmm;
++static vm_offset_t gcc, tlmm, parf, phy, dbi, cfg_bus1;
++static bool powered, controller, linked;
+ 
+ static uint32_t __attribute__((noinline))
+ rd(vm_offset_t address)
+@@ -65,6 +104,37 @@ rd(vm_offset_t address)
+ 	return value;
+ }
+ 
++static void
++wr(vm_offset_t address, uint32_t value)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r" (value), "r" (address) : "memory");
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++static void
++set(vm_offset_t address, uint32_t bits)
++{
++	wr(address, rd(address) | bits);
++}
++
++static void
++clear(vm_offset_t address, uint32_t bits)
++{
++	wr(address, rd(address) & ~bits);
++}
++
++static bool
++wait_for(vm_offset_t address, uint32_t mask, uint32_t want, uint32_t ms)
++{
++	for (uint32_t i = 0; i < 10 * ms; i++) {
++		if ((rd(address) & mask) == want) {
++			return true;
++		}
++		delay(100);
++	}
++	return (rd(address) & mask) == want;
++}
++
+ static void
+ announce(const char *what)
+ {
+@@ -192,7 +262,182 @@ step_pcie(void)
+ 	return true;
+ }
+ 
+-static bool (*const steps[])(void) = { step_gcc, step_pins, step_rails, step_pcie };
++static bool
++step_power(void)
++{
++	announce("switch on the PCIe0 GDSC and clocks (GCC writes)");
++	clear(gcc + GCC_PCIE_0_GDSCR, 1u);                     /* SW_COLLAPSE off */
++	if (!wait_for(gcc + GCC_PCIE_0_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 10)) {
++		printf("NEGRONI WIFI: 5 stop: PCIE_0_GDSC does not come on (%#x)\n", rd(gcc + GCC_PCIE_0_GDSCR));
++		return false;
++	}
++	wr(gcc + GCC_PCIE_0_PIPE_MUX, 2);                       /* XO until the PHY makes the pipe clock */
++	wr(gcc + GCC_PCIE_0_RCHNG_RCGR + 4, 1u << 8 | (2 * 6 - 1));     /* GPLL0 main / 6 = 100 MHz */
++	set(gcc + GCC_PCIE_0_RCHNG_RCGR, 1u);
++	wait_for(gcc + GCC_PCIE_0_RCHNG_RCGR, 1u, 0, 10);
++	set(gcc + GCC_VOTE_0, GCC_VOTE_0_PCIE0);
++	set(gcc + GCC_VOTE_2, GCC_VOTE_2_PCIE0 & ~(1u << 4));  /* the pipe clock after the PHY (step 7) */
++	set(gcc + GCC_PCIE_0_CLKREF_EN, 1u);
++	delay(100);
++	bool ok = !(rd(gcc + GCC_PCIE_0_CFG_AHB) & CBCR_OFF) && !(rd(gcc + GCC_PCIE_0_AUX) & CBCR_OFF);
++	printf("NEGRONI WIFI: 5 GDSC %#x, CFG AHB %#x, AUX %#x, MSTR %#x, SLV %#x, RCHNG cfg %#x: %s\n",
++	    rd(gcc + GCC_PCIE_0_GDSCR), rd(gcc + GCC_PCIE_0_CFG_AHB), rd(gcc + GCC_PCIE_0_AUX),
++	    rd(gcc + GCC_PCIE_0_MSTR_AXI), rd(gcc + GCC_PCIE_0_SLV_AXI), rd(gcc + GCC_PCIE_0_RCHNG_RCGR + 4),
++	    ok ? "running" : "NOT running");
++	powered = ok;
++	return ok;
++}
++
++static void
++gpio_out(uint32_t pin, bool high)
++{
++	wr(tlmm + TLMM_PIN(pin) + 4, high ? 2u : 0);
++	wr(tlmm + TLMM_PIN(pin), 7u << 6 | 1u << 9);           /* gpio function, 16 mA, no pull, output */
++}
++
++static bool
++step_chip_on(void)
++{
++	announce("hold PERST low and drive WLAN_EN high (TLMM writes)");
++	gpio_out(PERST_PIN, false);
++	gpio_out(WLAN_EN_PIN, true);
++	delay(50000);
++	printf("NEGRONI WIFI: 6 WLAN_EN out %u, PERST out %u, SW_CTRL in %u\n", (rd(tlmm + TLMM_PIN(WLAN_EN_PIN) + 4) >> 1) & 1,
++	    (rd(tlmm + TLMM_PIN(PERST_PIN) + 4) >> 1) & 1, rd(tlmm + TLMM_PIN(82) + 4) & 1);
++	return true;
++}
++
++static void
++bcr_pulse(uint32_t off)
++{
++	wr(gcc + off, 1);
++	delay(1000);
++	wr(gcc + off, 0);
++	delay(1000);
++}
++
++static bool
++step_phy(void)
++{
++	uint32_t status;
++
++	if (!powered) {
++		printf("NEGRONI WIFI: 7 stop: no clocks (step 5)\n");
++		return false;
++	}
++	announce("set the controller up and start the PHY (PARF and PHY writes)");
++	parf = ml_io_map(PARF_PHYS, PARF_SIZE);
++	phy = ml_io_map(PHY_PHYS, PHY_SIZE);
++	bcr_pulse(GCC_PCIE_0_BCR);
++	wr(parf + PARF_DEVICE_TYPE, 4);                         /* root complex */
++	clear(parf + PARF_PHY_CTRL, 1u);                        /* PHY_TEST_PWR_DOWN */
++	wr(parf + PARF_DBI_BASE_ADDR_V2, (uint32_t)DBI_PHYS);
++	wr(parf + PARF_DBI_BASE_ADDR_V2_HI, 0);
++	wr(parf + PARF_ATU_BASE_ADDR, (uint32_t)(DBI_PHYS + ATU_OFFSET));
++	wr(parf + PARF_ATU_BASE_ADDR_HI, 0);
++	clear(parf + PARF_SYS_CTRL, 1u << 29);                  /* MAC_PHY_POWERDOWN_IN_P2_D_MUX_EN */
++	set(parf + PARF_MHI_CLOCK_RESET_CTRL, 1u << 4);         /* BYPASS */
++	clear(parf + PARF_PM_CTRL, 1u << 5);                    /* REQ_NOT_ENTR_L1 */
++	set(parf + PARF_AXI_MSTR_WR_ADDR_HALT_V2, 1u << 31);
++
++	wr(gcc + GCC_PCIE_0_PHY_BCR, 1);
++	wr(gcc + GCC_PCIE_0_NOCSR_COM_PHY_BCR, 1);
++	delay(300);
++	wr(gcc + GCC_PCIE_0_PHY_BCR, 0);
++	set(phy + PCS_POWER_DOWN_CONTROL, 1u | 2u);             /* SW_PWRDN | REFCLK_DRV_DSBL */
++	for (unsigned i = 0; i < sizeof(phy_init) / sizeof(phy_init[0]); i++) {
++		wr(phy + phy_init[i][0], phy_init[i][1]);
++	}
++	wr(gcc + GCC_PCIE_0_NOCSR_COM_PHY_BCR, 0);
++	clear(phy + PCS_SW_RESET, 1u);
++	set(phy + PCS_START_CONTROL, 1u | 2u);                  /* SERDES_START | PCS_START */
++	delay(1200);
++	wr(gcc + GCC_PCIE_0_PIPE_MUX, 0);
++	set(gcc + GCC_VOTE_2, 1u << 4);                         /* pipe clock */
++	wait_for(phy + PCS_PCS_STATUS1, 1u << 6, 0, 20);
++	status = rd(phy + PCS_PCS_STATUS1);
++	printf("NEGRONI WIFI: 7 PHY PCS_STATUS1 %#x (%s), pipe %#x\n", status, (status & (1u << 6)) ? "NOT ready" : "ready",
++	    rd(gcc + GCC_PCIE_0_PIPE));
++	controller = !(status & (1u << 6));
++	return controller;
++}
++
++static void
++atu(vm_offset_t base, unsigned index, uint32_t type, uint64_t from, uint64_t limit, uint64_t to)
++{
++	vm_offset_t r = base + ATU_OFFSET + ((vm_offset_t)index << 9);
++
++	wr(r + 0x08, (uint32_t)from);
++	wr(r + 0x0c, (uint32_t)(from >> 32));
++	wr(r + 0x10, (uint32_t)limit);
++	wr(r + 0x20, (uint32_t)(limit >> 32));
++	wr(r + 0x14, (uint32_t)to);
++	wr(r + 0x18, (uint32_t)(to >> 32));
++	wr(r + 0x00, type);
++	wr(r + 0x04, 1u << 31);
++}
++
++static bool
++step_link(void)
++{
++	uint32_t status = 0;
++
++	if (!controller) {
++		printf("NEGRONI WIFI: 8 stop: no PHY (step 7)\n");
++		return false;
++	}
++	announce("make the root port a bridge, map bus 1, release PERST and train the link");
++	dbi = ml_io_map(DBI_PHYS, DBI_SIZE);
++	set(dbi + 0x8bc, 1u);                                   /* DBI_RO_WR_EN */
++	wr(dbi + 0x08, (rd(dbi + 0x08) & 0xff) | 0x0604u << 16);        /* PCI-to-PCI bridge */
++	clear(dbi + 0x70 + 0x14, 1u << 6);                      /* no hot plug */
++	clear(dbi + 0x8bc, 1u);
++	wr(dbi + 0x10, 0);
++	wr(dbi + 0x14, 0);
++	wr(dbi + 0x18, 0x00010100);                             /* primary 0, secondary 1, subordinate 1 */
++	set(dbi + 0x04, 2u | 4u);                               /* memory, bus master */
++	atu(dbi, 0, 4, CFG_BUS1_PHYS, CFG_BUS1_PHYS + 0xfffff, 1ull << 24);     /* CFG0 to bus 1 */
++	atu(dbi, 1, 0, MEM_BASE, MEM_LIMIT, MEM_BASE);
++	delay(100000);                                          /* PERST held 100 ms */
++	gpio_out(PERST_PIN, true);
++	delay(1000);
++	set(parf + PARF_LTSSM, 1u << 8);
++	for (int i = 0; i < 100; i++) {
++		status = rd(dbi + 0x80);
++		if (status & (1u << 29)) {
++			break;
++		}
++		delay(10000);
++	}
++	printf("NEGRONI WIFI: 8 link %s: LNKSTA %#x (gen %u x%u), LTSSM %#x\n", (status & (1u << 29)) ? "UP" : "down",
++	    status >> 16, (status >> 16) & 0xf, (status >> 20) & 0x3f, rd(parf + PARF_LTSSM));
++	linked = (status & (1u << 29)) != 0;
++	return linked;
++}
++
++static bool
++step_chip(void)
++{
++	uint32_t id;
++
++	if (!linked) {
++		printf("NEGRONI WIFI: 9 stop: no link (step 8)\n");
++		return false;
++	}
++	announce("read the chip's config space on bus 1");
++	cfg_bus1 = ml_io_map(CFG_BUS1_PHYS, 0x1000);
++	id = rd(cfg_bus1);
++	printf("NEGRONI WIFI: 9 bus 1 device %04x:%04x, class %#x, BAR0 %#x, BAR1 %#x\n", id & 0xffff, id >> 16,
++	    rd(cfg_bus1 + 0x08) >> 8, rd(cfg_bus1 + 0x10), rd(cfg_bus1 + 0x14));
++	if (id == CHIP_ID) {
++		printf("NEGRONI WIFI: 9 THE QCA6490 ANSWERS ON PCIe\n");
++	}
++	return id == CHIP_ID;
++}
++
++static bool (*const steps[])(void) = {
++	step_gcc, step_pins, step_rails, step_pcie, step_power, step_chip_on, step_phy, step_link, step_chip,
++};
+ 
+ void
+ negroni_wifi_init(void)
+diff --git a/bsd/dev/negroni_wifi_phy.h b/bsd/dev/negroni_wifi_phy.h
+new file mode 100644
+index 0000000..1a2d3c4
+--- /dev/null
++++ b/bsd/dev/negroni_wifi_phy.h
+@@ -0,0 +1,90 @@
++/* SM8450 QMP gen3x1 PCIe PHY init, from Linux phy-qcom-qmp-pcie.c (offset from the PHY base, value) */
++static const uint16_t phy_init[][2] = {
++	/* serdes */
++	{ 0x0094, 0x08 },
++	{ 0x0154, 0x34 },
++	{ 0x016c, 0x08 },
++	{ 0x0058, 0x0f },
++	{ 0x00a4, 0x42 },
++	{ 0x0110, 0x24 },
++	{ 0x011c, 0x03 },
++	{ 0x0118, 0xb4 },
++	{ 0x010c, 0x02 },
++	{ 0x01bc, 0x11 },
++	{ 0x00bc, 0x82 },
++	{ 0x00d4, 0x03 },
++	{ 0x00d0, 0x55 },
++	{ 0x00cc, 0x55 },
++	{ 0x00b0, 0x1a },
++	{ 0x00ac, 0x0a },
++	{ 0x00c4, 0x68 },
++	{ 0x00e0, 0x02 },
++	{ 0x00dc, 0xaa },
++	{ 0x00d8, 0xab },
++	{ 0x00b8, 0x34 },
++	{ 0x00b4, 0x14 },
++	{ 0x0158, 0x01 },
++	{ 0x0074, 0x06 },
++	{ 0x007c, 0x16 },
++	{ 0x0084, 0x36 },
++	{ 0x0078, 0x06 },
++	{ 0x0080, 0x16 },
++	{ 0x0088, 0x36 },
++	{ 0x01b0, 0x1e },
++	{ 0x01ac, 0xca },
++	{ 0x01b8, 0x18 },
++	{ 0x01b4, 0xa2 },
++	{ 0x0010, 0x01 },
++	{ 0x001c, 0x31 },
++	{ 0x0020, 0x01 },
++	{ 0x0024, 0xde },
++	{ 0x0028, 0x07 },
++	{ 0x0030, 0x4c },
++	{ 0x0034, 0x06 },
++	{ 0x0048, 0x90 },
++	/* tx */
++	{ 0x0ee4, 0x20 },
++	{ 0x0e84, 0x75 },
++	{ 0x0e90, 0x3f },
++	{ 0x0e3c, 0x16 },
++	{ 0x0e40, 0x04 },
++	/* rx */
++	{ 0x115c, 0x7f },
++	{ 0x1160, 0xff },
++	{ 0x116c, 0xd8 },
++	{ 0x1170, 0xdc },
++	{ 0x1174, 0xdc },
++	{ 0x1178, 0x5c },
++	{ 0x117c, 0x34 },
++	{ 0x1180, 0xa6 },
++	{ 0x1190, 0x34 },
++	{ 0x10dc, 0x00 },
++	{ 0x104c, 0x08 },
++	{ 0x1050, 0x08 },
++	{ 0x11a4, 0x38 },
++	{ 0x10cc, 0xf0 },
++	/* pcs */
++	{ 0x0388, 0x77 },
++	{ 0x0398, 0x0b },
++	{ 0x02dc, 0x05 },
++	/* pcs_misc */
++	{ 0x0694, 0x00 },
++	{ 0x0654, 0x00 },
++	{ 0x06a8, 0x0f },
++	{ 0x0620, 0xc1 },
++	/* rc serdes */
++	{ 0x0050, 0x07 },
++	/* rc rx */
++	{ 0x1164, 0xbf },
++	{ 0x1168, 0x3f },
++	{ 0x1194, 0x38 },
++	{ 0x10d8, 0x07 },
++	{ 0x1044, 0xf0 },
++	{ 0x10f4, 0x07 },
++	{ 0x1008, 0x09 },
++	{ 0x1014, 0x05 },
++};
++#define PCS_SW_RESET		0x200
++#define PCS_START_CONTROL		0x244
++#define PCS_PCS_STATUS1		0x214
++#define PCS_POWER_DOWN_CONTROL		0x240
