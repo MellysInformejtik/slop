@@ -749,3 +749,19 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   them into /Applications and drops their AppPlaceholders; build-ios16-root.sh step 3b runs it. Not yet run (needs sudo).
 - unixnu/out/boot_a-gpu.img (sha cbf56e54…): default args + negroniadreno=22 (ladder then gpu_stop), Mu without
   NegroniPcieDxe. unixnu/out/boot_a.img = normal no-GPU image.
+
+## 2026-10-23 GPU service (0118) + audio plan
+- Patch 0118 (CI 39973420202, first try 39971405098 failed: NegroniGPU.cpp needs board_config.h before its
+  NEGRONI guard): with negroniadreno=22 negroniadreno_keep=1 the A730 stays on and iokit/Kernel/arm/NegroniGPU.cpp
+  registers "RedwoodGPU" (msm DRM user client: GET_PARAM, GEM_NEW/INFO, a7xx_submit-style SUBMIT, WAIT_FENCE,
+  CLOSE; no IOSurface import, no panel show, no recovery). gpu-mesa CI 39972118185 (patches repo history was
+  rewritten upstream; re-pinned b4c5513, same tree) builds libOSMesa (FD730 known) + gl_test; artifact in
+  ~/ios-work/negroni-ios-out/gpu-mesa-39972118185. Boot image unixnu/out/boot_a-gpu-keep.img (sha ff337bdc…).
+  negroni-ios/tools/install-gl-test.sh adds Mesa + gl_test + launchd job (runs 60 s after boot, to /dev/console).
+  NOT yet run on the phone.
+- Audio (iOS) plan: SM8450 is AudioReach (GPR/q6apm), not APR. Speakers = 2x TFA9874 on i2c13 (0x34/0x35, reset
+  gpio50/51) via TERTIARY_TDM_RX_0; headset/mics = WCD9385 via SoundWire. ADSP: remoteproc@30000000, PAS id 1,
+  memory 0x85e00000 size 0x2100000, smp2p remote pid 2, IPCC client LPASS. Template: hackios redwood_adsp.c
+  (start + SMP2P/GLINK/QRTR) — upper layers (APR, redwood_sound.c) do not apply.
+- BLOCKER: no ADSP firmware locally (adsp.mdt/.bNN live in modem_a). User will dump modem_a later (OrangeFox).
+  Phone currently: slot A = iOS chain (vendor_boot ours, vbmeta disabled, dtbo erased).
