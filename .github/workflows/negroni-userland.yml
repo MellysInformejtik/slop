@@ -1,0 +1,26 @@
+name: negroni-userland
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'negroni-ios/userland/**'
+      - '.github/workflows/negroni-userland.yml'
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and sign iOS 16 helper
+        run: |
+          mkdir -p out
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -fobjc-arc -Wall -Wextra -Werror \
+            negroni-ios/userland/poster-register.m -framework Foundation -framework MobileCoreServices -o out/negroni-poster-register
+          codesign -s - --entitlements negroni-ios/userland/poster-register.entitlements.plist out/negroni-poster-register
+          codesign --verify --strict out/negroni-poster-register
+          xcrun vtool -show-build out/negroni-poster-register
+          shasum -a 256 out/negroni-poster-register > out/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: negroni-ios-userland
+          path: out/
