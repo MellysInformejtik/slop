@@ -1,0 +1,942 @@
+diff --git a/bsd/dev/negroni_adreno.c b/bsd/dev/negroni_adreno.c
+index 3386688..1e145df 100644
+--- a/bsd/dev/negroni_adreno.c
++++ b/bsd/dev/negroni_adreno.c
+@@ -57,6 +57,7 @@
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <kern/clock.h>
++#include <mach/mach_time.h>
+ #include <pexpert/pexpert.h>
+ #include <vm/vm_kern.h>
+ #include <arm/caches_internal.h>
+@@ -1999,6 +2000,314 @@ gpu_stop(void)
+ 	printf("NEGRONI ADRENO: GPU block stopped\n");
+ }
+ 
++/*
++ * ---- the GPU kept on, for programs to draw with (iokit/Kernel/arm/NegroniGPU.cpp) ----
++ *
++ * With negroniadreno_keep=1 and all 22 steps done, the 3D core stays running and these are what
++ * the RedwoodGPU service (Linux msm DRM for Mesa's freedreno) is built on: GET_PARAM answers,
++ * addresses in context 0 of the GPU's SMMU, page mappings, submission of command buffers the way
++ * Linux's a7xx_submit puts them in the ring, and the fence the core writes when one is done.
++ * One address space for every client, as on the HackiOS port of the same interface.
++ */
++#define CP_WAIT_TIMESTAMP       0x14
++#define CP_INDIRECT_BUFFER_PFE  0x3f
++#define CP_SET_MARKER           0x65
++#define CP_SET_THREAD_BR        1u
++#define CP_SET_THREAD_BV        2u
++#define CP_SET_THREAD_BOTH      3u
++#define CP_SYNC_THREADS         (1u << 31)
++#define EVENT_CCU_INVALIDATE_DEPTH 0x18
++#define EVENT_CCU_INVALIDATE_COLOR 0x19
++#define EVENT_WRITE_ENABLED     (1u << 27)
++#define REG_CP_SCRATCH_REG2     0x0885
++#define GPU_FENCE_AT            0x200   /* in the scratch page: the fence BR writes last */
++#define GPU_BV_FENCE_AT         0x210   /* ... and the one BV writes when it is done */
++#define GPU_CHIP_ID             0x07030001u
++#define GPU_ADDRESSES_START     0x100000000ull
++#define GPU_ADDRESSES_SIZE      0x3f00000000ull
++#define GPU_ADDRESS_GRANULE     0x10000ull
++
++static bool gpu_kept;
++static uint32_t gpu_fence;
++static struct {
++	uint64_t start, size;
++} gpu_free[1024];
++static unsigned gpu_free_count;
++
++bool negroni_gpu_ready(void);
++bool negroni_gpu_parameter(uint32_t which, uint64_t *value);
++uint64_t negroni_gpu_address(uint64_t size);
++void negroni_gpu_address_free(uint64_t address, uint64_t size);
++bool negroni_gpu_map(uint64_t address, uint64_t phys, bool read_only);
++void negroni_gpu_mapped(void);
++void negroni_gpu_unmap(uint64_t address, uint64_t size);
++void negroni_gpu_to_memory(void *start, uint64_t size);
++bool negroni_gpu_done(uint32_t fence);
++uint32_t negroni_gpu_last(void);
++uint32_t negroni_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t count);
++void negroni_gpu_report(const char *why);
++extern void NegroniGPUStart(void);
++
++bool
++negroni_gpu_ready(void)
++{
++	return gpu_kept;
++}
++
++/* msm GET_PARAM (Linux adreno_get_param for the A730; numbers from msm_drm.h) */
++bool
++negroni_gpu_parameter(uint32_t which, uint64_t *value)
++{
++	switch (which) {
++	case 0x01:                      /* GPU_ID: none, CHIP_ID says it */
++	case 0x06:                      /* GMEM_BASE */
++	case 0x08:                      /* PP_PGTABLE */
++	case 0x09:                      /* FAULTS */
++	case 0x0a:                      /* SUSPENDS */
++	case 0x11:                      /* RAYTRACING */
++		*value = 0;
++		return true;
++	case 0x02:                      /* GMEM_SIZE (adreno_device.c: A730 SZ_2M) */
++		*value = 2u << 20;
++		return true;
++	case 0x03:                      /* CHIP_ID */
++		*value = GPU_CHIP_ID;
++		return true;
++	case 0x04:                      /* MAX_FREQ */
++		*value = 818000000ull;
++		return true;
++	case 0x05:                      /* TIMESTAMP */
++		*value = mach_absolute_time();
++		return true;
++	case 0x07:                      /* PRIORITIES */
++		*value = 1;
++		return true;
++	case 0x10:                      /* HIGHEST_BANK_BIT (step 20: hbb 16) */
++		*value = 16;
++		return true;
++	case 0x12:                      /* UBWC_SWIZZLE */
++		*value = 6;
++		return true;
++	case 0x13:                      /* MACROTILE_MODE */
++		*value = 1;
++		return true;
++	default:
++		return false;
++	}
++}
++
++static uint64_t
++gpu_address_span(uint64_t size)
++{
++	return (size + (GPU_ADDRESS_GRANULE - 1)) & ~(GPU_ADDRESS_GRANULE - 1);
++}
++
++/* First fit out of the free list; the address is the buffer's until negroni_gpu_address_free(). 0: none left. */
++uint64_t
++negroni_gpu_address(uint64_t size)
++{
++	size = gpu_address_span(size);
++	for (unsigned i = 0; i < gpu_free_count; i++) {
++		if (gpu_free[i].size >= size) {
++			uint64_t address = gpu_free[i].start;
++
++			gpu_free[i].start += size;
++			gpu_free[i].size -= size;
++			if (gpu_free[i].size == 0) {
++				memmove(&gpu_free[i], &gpu_free[i + 1], (--gpu_free_count - i) * sizeof(gpu_free[0]));
++			}
++			return address;
++		}
++	}
++	return 0;
++}
++
++void
++negroni_gpu_address_free(uint64_t address, uint64_t size)
++{
++	unsigned at;
++
++	size = gpu_address_span(size);
++	for (at = 0; at < gpu_free_count && gpu_free[at].start < address; at++) {
++	}
++	if (at > 0 && gpu_free[at - 1].start + gpu_free[at - 1].size == address) {
++		gpu_free[at - 1].size += size;
++		if (at < gpu_free_count && address + size == gpu_free[at].start) {
++			gpu_free[at - 1].size += gpu_free[at].size;
++			memmove(&gpu_free[at], &gpu_free[at + 1], (--gpu_free_count - at) * sizeof(gpu_free[0]));
++		}
++	} else if (at < gpu_free_count && address + size == gpu_free[at].start) {
++		gpu_free[at].start = address;
++		gpu_free[at].size += size;
++	} else if (gpu_free_count < sizeof(gpu_free) / sizeof(gpu_free[0])) {
++		memmove(&gpu_free[at + 1], &gpu_free[at], (gpu_free_count++ - at) * sizeof(gpu_free[0]));
++		gpu_free[at].start = address;
++		gpu_free[at].size = size;
++	}
++}
++
++bool
++negroni_gpu_map(uint64_t address, uint64_t phys, bool read_only)
++{
++	return space_map(&core_space, address, phys, PTE_GMU | PTE_UNPRIVILEGED | (read_only ? PTE_READ_ONLY : 0));
++}
++
++/* The tables out of the cache, and the SMMU's TLB for context 0 forgotten. */
++void
++negroni_gpu_mapped(void)
++{
++	uint32_t cb = smmu_cb(&core_space);
++
++	for (uint32_t i = 0; i < core_space.table_count; i++) {
++		to_memory((vm_offset_t)core_space.tables[i].table, 4096);
++	}
++	wr(smmu + cb + SMMU_CB_TLBIASID, core_space.context);
++	wr(smmu + cb + SMMU_CB_TLBSYNC, 1);
++	for (int i = 0; i < 1000 && (rd(smmu + cb + SMMU_CB_TLBSTATUS) & 1); i++) {
++	}
++}
++
++void
++negroni_gpu_unmap(uint64_t address, uint64_t size)
++{
++	for (uint64_t offset = 0; offset < size; offset += 4096) {
++		space_map(&core_space, address + offset, 0, 0);
++	}
++	negroni_gpu_mapped();
++}
++
++void
++negroni_gpu_to_memory(void *start, uint64_t size)
++{
++	if (start == NULL) {
++		__asm__ volatile ("dsb sy");
++		return;
++	}
++	to_memory((vm_offset_t)start, size);
++}
++
++bool
++negroni_gpu_done(uint32_t fence)
++{
++	volatile uint32_t *word = (volatile uint32_t *)(core_scratch.memory + GPU_FENCE_AT);
++
++	to_memory((vm_offset_t)word, 4);
++	return (int32_t)(*word - fence) >= 0;
++}
++
++uint32_t
++negroni_gpu_last(void)
++{
++	return gpu_fence;
++}
++
++static void
++ring_fence(uint32_t event, uint32_t at, uint32_t fence)
++{
++	ring_command(CP_EVENT_WRITE7, 4);
++	ring(event | EVENT_WRITE_ENABLED);
++	ring(CORE_SCRATCH_ADDRESS + at);
++	ring(0);
++	ring(fence);
++}
++
++/* Command buffers, in order (an address and a count of words each), as Linux's a7xx_submit. 0: the ring stays full. */
++uint32_t
++negroni_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t count)
++{
++	uint32_t wanted = 48 + 4 * count, room = 0;
++
++	for (int i = 0; i < 20000; i++) {
++		room = (rd(gpu_regs + GPU_WORD(REG_CP_RB_RPTR)) + RING_WORDS - ring_at - 1) % RING_WORDS;
++		if (room >= wanted) {
++			break;
++		}
++		delay(100);
++	}
++	if (room < wanted) {
++		return 0;
++	}
++	if (++gpu_fence == 0) {
++		gpu_fence = 1;
++	}
++	ring_command(CP_THREAD_CONTROL, 1);
++	ring(CP_SYNC_THREADS | CP_SET_THREAD_BR);
++	ring_command(CP_THREAD_CONTROL, 1);
++	ring(CP_SET_THREAD_BOTH);
++	ring_command(CP_SET_MARKER, 1);
++	ring(0x101);                    /* IFPC disable */
++	ring_command(CP_SET_MARKER, 1);
++	ring(0x00d);                    /* IB1LIST start */
++	for (uint32_t i = 0; i < count; i++) {
++		ring_command(CP_INDIRECT_BUFFER_PFE, 3);
++		ring((uint32_t)addresses[i]);
++		ring((uint32_t)(addresses[i] >> 32));
++		ring(words[i]);
++	}
++	ring_command(CP_SET_MARKER, 1);
++	ring(0x00e);                    /* IB1LIST end */
++	ring_register(REG_CP_SCRATCH_REG2, gpu_fence);
++	ring_command(CP_THREAD_CONTROL, 1);
++	ring(CP_SET_THREAD_BR);
++	ring_command(CP_EVENT_WRITE7, 1);
++	ring(EVENT_CCU_INVALIDATE_DEPTH);
++	ring_command(CP_EVENT_WRITE7, 1);
++	ring(EVENT_CCU_INVALIDATE_COLOR);
++	ring_command(CP_THREAD_CONTROL, 1);
++	ring(CP_SET_THREAD_BV);
++	ring_fence(EVENT_CACHE_CLEAN, GPU_BV_FENCE_AT, gpu_fence);
++	ring_command(CP_THREAD_CONTROL, 1);
++	ring(CP_SET_THREAD_BR);
++	ring_command(CP_WAIT_TIMESTAMP, 4);
++	ring(0);
++	ring(CORE_SCRATCH_ADDRESS + GPU_BV_FENCE_AT);
++	ring(0);
++	ring(gpu_fence);
++	ring_fence(EVENT_CACHE_CLEAN, GPU_FENCE_AT, gpu_fence);
++	ring_command(CP_THREAD_CONTROL, 1);
++	ring(CP_SET_THREAD_BOTH);
++	ring_command(CP_SET_MARKER, 1);
++	ring(0x100);                    /* IFPC enable */
++	if (ring_at >= ring_sent) {
++		to_memory(core_ring.memory + 4 * ring_sent, 4 * (ring_at - ring_sent));
++	} else {
++		to_memory(core_ring.memory + 4 * ring_sent, 4 * (RING_WORDS - ring_sent));
++		to_memory(core_ring.memory, 4 * ring_at);
++	}
++	ring_sent = ring_at;
++	wr(gpu_regs + GPU_WORD(REG_CP_RB_WPTR), ring_at);
++	return gpu_fence;
++}
++
++/* A submission that does not come back: what the core and its SMMU context say. */
++void
++negroni_gpu_report(const char *why)
++{
++	printf("NEGRONI GPU: %s: fence %u of %u, rptr %u wptr %u, RBBM_STATUS %#x, CP_HW_FAULT %#x, CP_INT %#x, scratch2 %u\n",
++	    why, *(volatile uint32_t *)(core_scratch.memory + GPU_FENCE_AT), gpu_fence,
++	    rd(gpu_regs + GPU_WORD(REG_CP_RB_RPTR)), ring_at, rd(gpu_regs + GPU_WORD(REG_RBBM_STATUS)),
++	    rd(gpu_regs + GPU_WORD(REG_CP_HW_FAULT)), rd(gpu_regs + GPU_WORD(REG_CP_INTERRUPT_STATUS)),
++	    rd(gpu_regs + GPU_WORD(REG_CP_SCRATCH_REG2)));
++	space_faulted(&core_space);
++}
++
++/* After step 22 with negroniadreno_keep=1: the fences start at 0 and the service is made. */
++static void
++gpu_keep(void)
++{
++	*(volatile uint32_t *)(core_scratch.memory + GPU_FENCE_AT) = 0;
++	*(volatile uint32_t *)(core_scratch.memory + GPU_BV_FENCE_AT) = 0;
++	to_memory(core_scratch.memory, 4096);
++	gpu_fence = 0;
++	gpu_free[0].start = GPU_ADDRESSES_START;
++	gpu_free[0].size = GPU_ADDRESSES_SIZE;
++	gpu_free_count = 1;
++	gpu_kept = true;
++	snprintf(negroni_gpu_badge, sizeof(negroni_gpu_badge), "GPU KEPT");
++	printf("NEGRONI GPU: the 3D core stays on; RedwoodGPU for programs\n");
++	NegroniGPUStart();
++}
++
+ void
+ negroni_adreno_init(void)
+ {
+@@ -2048,6 +2357,8 @@ negroni_adreno_init(void)
+ 	(void)PE_parse_boot_argn("negroniadreno_keep", &keep, sizeof(keep));
+ 	if (!keep && last >= 4) {
+ 		gpu_stop();
++	} else if (keep && !failed && last >= 22) {
++		gpu_keep();
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_NEGRONI */
+diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
+new file mode 100644
+index 0000000..9a6af9d
+--- /dev/null
++++ b/iokit/Kernel/arm/NegroniGPU.cpp
+@@ -0,0 +1,588 @@
++/*
++ * RedwoodGPU on negroni: the Adreno 730 for programs to draw with.
++ *
++ * bsd/dev/negroni_adreno.c wakes the GPU and, with boot-args negroniadreno=22
++ * negroniadreno_keep=1, keeps it on and starts this service. A program that opens it speaks the
++ * interface of Linux's msm DRM driver, the one Mesa's freedreno knows: every request of that
++ * interface is a call of the user client with the request's number as the selector and the
++ * request's structure passed in and back (the redwood-drm libdrm stand-in of the HackiOS Mesa
++ * patches, built by .github/workflows/gpu-mesa.yml). What Linux does with mmap() on the device is
++ * the client memory of the type that is the buffer's handle. The service keeps that port's name
++ * so the same userland finds it.
++ *
++ * There is: parameters, buffers (made, told their GPU address, mapped, given back), submission
++ * of command buffers, waiting for one. Every client's buffers are in the one SMMU context.
++ * Not here yet: IOSurface memory as buffers, showing pixels on the panel, interrupts (waiting
++ * is asking again every 200 us), recovery of a core that stops answering.
++ */
++
++#if defined(NEGRONI)
++#include <IOKit/IOLib.h>
++#include <IOKit/IOLocks.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOPlatformExpert.h>
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <kern/clock.h>
++#include <mach/mach_time.h>
++#include <sys/systm.h>
++
++extern "C" {
++bool negroni_gpu_ready(void);
++bool negroni_gpu_parameter(uint32_t which, uint64_t * value);
++uint64_t negroni_gpu_address(uint64_t size);
++void negroni_gpu_address_free(uint64_t address, uint64_t size);
++bool negroni_gpu_map(uint64_t address, uint64_t phys, bool read_only);
++void negroni_gpu_mapped(void);
++void negroni_gpu_unmap(uint64_t address, uint64_t size);
++void negroni_gpu_to_memory(void * start, uint64_t size);
++bool negroni_gpu_done(uint32_t fence);
++uint32_t negroni_gpu_last(void);
++uint32_t negroni_gpu_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count);
++void negroni_gpu_report(const char * why);
++void NegroniGPUStart(void);
++}
++
++/* Linux include/uapi/drm/msm_drm.h and drm.h: the requests' numbers and structures */
++enum {
++	kDrmGemClose            = 0x09,
++	kMsmGetParam            = 0x40,
++	kMsmSetParam            = 0x41,
++	kMsmGemNew              = 0x42,
++	kMsmGemInfo             = 0x43,
++	kMsmGemCpuPrep          = 0x44,
++	kMsmGemCpuFini          = 0x45,
++	kMsmGemSubmit           = 0x46,
++	kMsmWaitFence           = 0x47,
++	kMsmGemMadvise          = 0x48,
++	kMsmSubmitQueueNew      = 0x4a,
++	kMsmSubmitQueueClose    = 0x4b,
++	kMsmSubmitQueueQuery    = 0x4c,
++};
++
++struct msm_timespec {
++	int64_t seconds, nanoseconds;
++};
++struct msm_param {
++	uint32_t pipe, param;
++	uint64_t value;
++	uint32_t len, pad;
++};
++struct msm_gem_new {
++	uint64_t size;
++	uint32_t flags, handle;
++};
++struct msm_gem_info {
++	uint32_t handle, info;
++	uint64_t value;
++	uint32_t len, pad;
++};
++struct msm_gem_cpu_prep {
++	uint32_t handle, op;
++	struct msm_timespec timeout;
++};
++struct msm_gem_submit_cmd {
++	uint32_t type, submit_idx, submit_offset, size, pad, nr_relocs;
++	uint64_t relocs;
++};
++struct msm_gem_submit_bo {
++	uint32_t flags, handle;
++	uint64_t presumed;
++};
++struct msm_gem_submit {
++	uint32_t flags, fence, nr_bos, nr_cmds;
++	uint64_t bos, cmds;
++	int32_t fence_fd;
++	uint32_t queueid;
++	uint64_t in_syncobjs, out_syncobjs;
++	uint32_t nr_in_syncobjs, nr_out_syncobjs, syncobj_stride, pad;
++};
++struct msm_wait_fence {
++	uint32_t fence, flags;
++	struct msm_timespec timeout;
++	uint32_t queueid;
++};
++struct msm_gem_madvise {
++	uint32_t handle, madv, retained;
++};
++struct msm_submitqueue {
++	uint32_t flags, prio, id;
++};
++struct msm_submitqueue_query {
++	uint64_t data;
++	uint32_t id, param, len, pad;
++};
++struct drm_gem_close {
++	uint32_t handle, pad;
++};
++
++#define MSM_INFO_GET_OFFSET     0
++#define MSM_INFO_GET_IOVA       1
++#define MSM_INFO_SET_NAME       2
++#define MSM_INFO_GET_FLAGS      5
++#define MSM_BO_GPU_READONLY     0x00000002
++#define MSM_PREP_NOSYNC         0x04
++#define MSM_SUBMIT_CMD_BUF      1
++#define MSM_SUBMIT_FENCE_FD_OUT 0x20000000
++
++#define GPU_BUFFERS             8192            /* a client's, at most */
++#define GPU_BUFFER_MAX          (256u << 20)
++#define GPU_SUBMIT_CMDS         128
++#define GPU_SUBMIT_BOS          8192
++#define GPU_PATIENCE_MS         5000
++#define GPU_ASK_AGAIN_US        200
++
++static IOLock * gGPULock;                       /* around everything that is the GPU's (negroni_gpu_...) */
++static bool gGPUStopped;                        /* a submission has not come back: nothing is waited for again */
++
++/* With the lock held, which is let go of while waiting. */
++static bool
++gpuWait(uint32_t fence, uint64_t milliseconds)
++{
++	uint64_t began = mach_absolute_time(), patience;
++
++	nanoseconds_to_absolutetime(milliseconds * NSEC_PER_MSEC, &patience);
++	for (;;) {
++		if (negroni_gpu_done(fence)) {
++			return true;
++		}
++		if (mach_absolute_time() - began >= patience || gGPUStopped) {
++			break;
++		}
++		IOLockUnlock(gGPULock);
++		delay_for_interval(GPU_ASK_AGAIN_US, NSEC_PER_USEC);
++		IOLockLock(gGPULock);
++	}
++	if (milliseconds >= 1000 && !gGPUStopped) {
++		negroni_gpu_report("no answer");
++		gGPUStopped = true;
++	}
++	return false;
++}
++
++/* How long from now a time of msm's is, in milliseconds; 0: now or past. */
++static uint64_t
++millisecondsUntil(const struct msm_timespec * when)
++{
++	uint64_t now;
++	int64_t left;
++
++	absolutetime_to_nanoseconds(mach_continuous_time(), &now);
++	left = when->seconds * (int64_t) NSEC_PER_SEC + when->nanoseconds - (int64_t) now;
++	if (left <= 0) {
++		return 0;
++	}
++	return (uint64_t) left / NSEC_PER_MSEC > GPU_PATIENCE_MS ? GPU_PATIENCE_MS : (uint64_t) left / NSEC_PER_MSEC;
++}
++
++class RedwoodGPU : public IOService
++{
++	OSDeclareDefaultStructors(RedwoodGPU);
++
++public:
++	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(RedwoodGPU, IOService);
++
++bool
++RedwoodGPU::start(IOService * provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "RedwoodGPUUserClient");
++	setName("RedwoodGPU");
++	registerService();
++	return true;
++}
++
++void
++NegroniGPUStart(void)
++{
++	IOService * provider = IOService::getPlatform();
++	RedwoodGPU * gpu;
++
++	gGPULock = IOLockAlloc();
++	gpu = OSTypeAlloc(RedwoodGPU);
++	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
++		OSSafeReleaseNULL(gpu);
++		IOLog("RedwoodGPU: cannot create the service\n");
++		return;
++	}
++	if (!gpu->start(provider)) {
++		gpu->detach(provider);
++		IOLog("RedwoodGPU: the service did not start\n");
++	}
++	gpu->release();
++}
++
++struct gpu_buffer {
++	IOBufferMemoryDescriptor *      memory;         /* NULL: this handle is free */
++	uint64_t                        address;        /* the GPU's for it */
++	uint64_t                        size;
++	uint32_t                        flags;
++	uint32_t                        fence;          /* the last submission that names it (0: none has) */
++};
++
++class RedwoodGPUUserClient : public IOUserClient
++{
++	OSDeclareDefaultStructors(RedwoodGPUUserClient);
++
++	struct gpu_buffer *     fBuffers;               /* handle n is fBuffers[n - 1] */
++	uint32_t                fNextQueue;
++	uint32_t                fNextBuffer;
++	uint32_t                fSubmits;
++
++	struct gpu_buffer * buffer(uint32_t handle);
++	void freeBuffer(struct gpu_buffer * b);
++	IOReturn gemNew(struct msm_gem_new * request);
++	IOReturn gemInfo(struct msm_gem_info * request);
++	IOReturn submit(struct msm_gem_submit * request);
++
++public:
++	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	virtual void free(void) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn clientMemoryForType(UInt32 type, IOOptionBits * options, IOMemoryDescriptor ** memory) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments * args,
++	    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(RedwoodGPUUserClient, IOUserClient);
++
++bool
++RedwoodGPUUserClient::start(IOService * provider)
++{
++	if (!negroni_gpu_ready() || !IOUserClient::start(provider)) {
++		return false;
++	}
++	fBuffers = IONewZero(struct gpu_buffer, GPU_BUFFERS);
++	return fBuffers != NULL;
++}
++
++/*
++ * With the lock held. A buffer the GPU may still be using is waited for; if the GPU does not
++ * finish, its memory stays the GPU's for good (it may yet be written).
++ */
++void
++RedwoodGPUUserClient::freeBuffer(struct gpu_buffer * b)
++{
++	if (b->fence != 0 && !negroni_gpu_done(b->fence) && !gpuWait(b->fence, 1000)) {
++		IOLog("RedwoodGPU: the GPU is not done with a buffer of %llu bytes: it stays its own\n", b->size);
++		b->memory->retain();
++	} else {
++		negroni_gpu_unmap(b->address, b->size);
++		negroni_gpu_address_free(b->address, b->size);
++	}
++	b->memory->release();
++	b->memory = NULL;
++}
++
++IOReturn
++RedwoodGPUUserClient::clientClose(void)
++{
++	if (fBuffers != NULL) {
++		IOLockLock(gGPULock);
++		gpuWait(negroni_gpu_last(), 1000);
++		for (uint32_t i = 0; i < GPU_BUFFERS; i++) {
++			if (fBuffers[i].memory != NULL) {
++				freeBuffer(&fBuffers[i]);
++			}
++		}
++		IOLockUnlock(gGPULock);
++	}
++	if (!isInactive()) {
++		terminate();
++	}
++	return kIOReturnSuccess;
++}
++
++void
++RedwoodGPUUserClient::free(void)
++{
++	if (fBuffers != NULL) {
++		IODelete(fBuffers, struct gpu_buffer, GPU_BUFFERS);
++		fBuffers = NULL;
++	}
++	IOUserClient::free();
++}
++
++struct gpu_buffer *
++RedwoodGPUUserClient::buffer(uint32_t handle)
++{
++	if (handle == 0 || handle > GPU_BUFFERS || fBuffers[handle - 1].memory == NULL) {
++		return NULL;
++	}
++	return &fBuffers[handle - 1];
++}
++
++IOReturn
++RedwoodGPUUserClient::gemNew(struct msm_gem_new * request)
++{
++	uint64_t size = round_page_64(request->size);
++	IOBufferMemoryDescriptor * memory;
++	struct gpu_buffer * b = NULL;
++	bool mapped = true;
++
++	if (size == 0 || size > GPU_BUFFER_MAX) {
++		return kIOReturnBadArgument;
++	}
++	/* zeroed, write-combined: what the program writes goes to memory, where the GPU reads it */
++	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared |
++	    kIOMapWriteCombineCache, (vm_size_t) size, PAGE_SIZE);
++	if (memory == NULL) {
++		return kIOReturnNoMemory;
++	}
++	IOLockLock(gGPULock);
++	for (uint32_t n = 0; n < GPU_BUFFERS; n++) {
++		uint32_t i = (fNextBuffer + n) % GPU_BUFFERS;
++
++		if (fBuffers[i].memory == NULL) {
++			b = &fBuffers[i];
++			request->handle = i + 1;
++			fNextBuffer = i + 1;
++			break;
++		}
++	}
++	if (b == NULL || (b->address = negroni_gpu_address(size)) == 0) {
++		IOLockUnlock(gGPULock);
++		IOLog("RedwoodGPU: no %s left for a buffer of %llu bytes\n", b ? "addresses" : "handles", size);
++		memory->release();
++		return kIOReturnNoMemory;
++	}
++	for (uint64_t offset = 0; offset < size && mapped; offset += 4096) {
++		IOByteCount length = 0;
++		addr64_t phys = memory->getPhysicalSegment(offset, &length, kIOMemoryMapperNone);
++
++		mapped = phys != 0 && negroni_gpu_map(b->address + offset, phys, request->flags & MSM_BO_GPU_READONLY);
++	}
++	negroni_gpu_mapped();
++	if (!mapped) {
++		negroni_gpu_unmap(b->address, size);
++		negroni_gpu_address_free(b->address, size);
++		IOLockUnlock(gGPULock);
++		IOLog("RedwoodGPU: a buffer of %llu bytes cannot be entered into the GPU's address space\n", size);
++		memory->release();
++		return kIOReturnNoMemory;
++	}
++	b->memory = memory;
++	b->size = size;
++	b->flags = request->flags;
++	b->fence = 0;
++	IOLockUnlock(gGPULock);
++	return kIOReturnSuccess;
++}
++
++IOReturn
++RedwoodGPUUserClient::gemInfo(struct msm_gem_info * request)
++{
++	struct gpu_buffer * b;
++	IOReturn ret = kIOReturnSuccess;
++
++	IOLockLock(gGPULock);
++	b = buffer(request->handle);
++	if (b == NULL) {
++		ret = kIOReturnBadArgument;
++	} else if (request->info == MSM_INFO_GET_OFFSET) {
++		request->value = (uint64_t) request->handle << 32;
++	} else if (request->info == MSM_INFO_GET_IOVA) {
++		request->value = b->address;    /* never moves while the buffer lives: freedreno asks once */
++	} else if (request->info == MSM_INFO_GET_FLAGS) {
++		request->value = b->flags;
++	} else if (request->info != MSM_INFO_SET_NAME) {
++		ret = kIOReturnUnsupported;     /* SET_IOVA among them: addresses are the kernel's to give */
++	}
++	IOLockUnlock(gGPULock);
++	return ret;
++}
++
++IOReturn
++RedwoodGPUUserClient::submit(struct msm_gem_submit * request)
++{
++	struct msm_gem_submit_bo * bos = NULL;
++	struct msm_gem_submit_cmd * cmds = NULL;
++	uint64_t addresses[GPU_SUBMIT_CMDS];
++	uint32_t words[GPU_SUBMIT_CMDS], count = 0;
++	IOReturn ret = kIOReturnBadArgument;
++
++	if (request->nr_cmds == 0 || request->nr_cmds > GPU_SUBMIT_CMDS || request->nr_bos == 0 || request->nr_bos > GPU_SUBMIT_BOS) {
++		return kIOReturnBadArgument;
++	}
++	bos = IONew(struct msm_gem_submit_bo, request->nr_bos);
++	cmds = IONew(struct msm_gem_submit_cmd, request->nr_cmds);
++	if (bos == NULL || cmds == NULL) {
++		ret = kIOReturnNoMemory;
++		goto out;
++	}
++	if (copyin((user_addr_t) request->bos, bos, request->nr_bos * sizeof(*bos)) != 0 ||
++	    copyin((user_addr_t) request->cmds, cmds, request->nr_cmds * sizeof(*cmds)) != 0) {
++		ret = kIOReturnVMError;
++		goto out;
++	}
++	IOLockLock(gGPULock);
++	negroni_gpu_to_memory(NULL, 0);         /* what the program wrote last is in memory */
++	for (uint32_t i = 0; i < request->nr_cmds; i++) {
++		struct gpu_buffer * b = cmds[i].submit_idx < request->nr_bos ? buffer(bos[cmds[i].submit_idx].handle) : NULL;
++
++		if (cmds[i].type != MSM_SUBMIT_CMD_BUF) {
++			continue;
++		}
++		if (b == NULL || cmds[i].nr_relocs != 0 || (cmds[i].size & 3) || (cmds[i].submit_offset & 3) ||
++		    (uint64_t) cmds[i].submit_offset + cmds[i].size > b->size) {
++			IOLog("RedwoodGPU: command buffer %u of a submission: buffer %u, offset %u, %u bytes, %u relocations: not taken\n",
++			    i, cmds[i].submit_idx, cmds[i].submit_offset, cmds[i].size, cmds[i].nr_relocs);
++			IOLockUnlock(gGPULock);
++			goto out;
++		}
++		addresses[count] = b->address + cmds[i].submit_offset;
++		words[count++] = cmds[i].size / 4;
++	}
++	request->fence = count != 0 && !gGPUStopped ? negroni_gpu_submit(addresses, words, count) : 0;
++	if (request->fence == 0 && count != 0 && !gGPUStopped) {
++		negroni_gpu_report("the ring is full");
++		gGPUStopped = true;
++	}
++	if (request->flags & MSM_SUBMIT_FENCE_FD_OUT) {
++		request->fence_fd = -1;
++	}
++	for (uint32_t i = 0; request->fence != 0 && i < request->nr_bos; i++) {
++		struct gpu_buffer * b = buffer(bos[i].handle);
++
++		if (b != NULL) {
++			b->fence = request->fence;
++		}
++	}
++	if (fSubmits++ < 4 && count != 0) {
++		IOLog("RedwoodGPU: submission %u: %u command buffers, the first at %#llx, %u words\n", request->fence, count,
++		    addresses[0], words[0]);
++	}
++	IOLockUnlock(gGPULock);
++	ret = request->fence != 0 ? kIOReturnSuccess : kIOReturnTimeout;
++out:
++	if (bos != NULL) {
++		IODelete(bos, struct msm_gem_submit_bo, request->nr_bos);
++	}
++	if (cmds != NULL) {
++		IODelete(cmds, struct msm_gem_submit_cmd, request->nr_cmds);
++	}
++	return ret;
++}
++
++IOReturn
++RedwoodGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, IOMemoryDescriptor ** memory)
++{
++	struct gpu_buffer * b;
++	IOReturn ret = kIOReturnBadArgument;
++
++	IOLockLock(gGPULock);
++	b = buffer(type);
++	if (b != NULL) {
++		b->memory->retain();
++		*memory = b->memory;
++		*options = 0;
++		ret = kIOReturnSuccess;
++	}
++	IOLockUnlock(gGPULock);
++	return ret;
++}
++
++IOReturn
++RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
++    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
++{
++	union {
++		struct msm_param param;
++		struct msm_gem_new gemNew;
++		struct msm_gem_info gemInfo;
++		struct msm_gem_cpu_prep cpuPrep;
++		struct msm_gem_submit submit;
++		struct msm_wait_fence waitFence;
++		struct msm_gem_madvise madvise;
++		struct msm_submitqueue queue;
++		struct msm_submitqueue_query query;
++		struct drm_gem_close close;
++	} r;
++	size_t size = args->structureInputSize;
++	struct gpu_buffer * b;
++	IOReturn ret = kIOReturnSuccess;
++	uint64_t zero = 0, patience;
++
++	if (args->structureInput == NULL || size > sizeof(r) || fBuffers == NULL) {
++		return kIOReturnBadArgument;
++	}
++	if (!negroni_gpu_ready()) {
++		return kIOReturnNotReady;
++	}
++	bzero(&r, sizeof(r));
++	memcpy(&r, args->structureInput, size);
++
++	switch (selector) {
++	case kMsmGetParam:
++		ret = negroni_gpu_parameter(r.param.param, &r.param.value) ? kIOReturnSuccess : kIOReturnBadArgument;
++		break;
++	case kMsmSetParam:
++	case kMsmGemCpuFini:
++	case kMsmSubmitQueueClose:
++		break;
++	case kMsmGemNew:
++		ret = gemNew(&r.gemNew);
++		break;
++	case kMsmGemInfo:
++		ret = gemInfo(&r.gemInfo);
++		break;
++	case kMsmGemCpuPrep:                    /* is the GPU done with a buffer: with all it has been given, here */
++		IOLockLock(gGPULock);
++		patience = (r.cpuPrep.op & MSM_PREP_NOSYNC) ? 0 : millisecondsUntil(&r.cpuPrep.timeout);
++		if (!gpuWait(negroni_gpu_last(), patience)) {
++			ret = kIOReturnBusy;
++		}
++		IOLockUnlock(gGPULock);
++		break;
++	case kMsmGemSubmit:
++		ret = submit(&r.submit);
++		break;
++	case kMsmWaitFence:
++		IOLockLock(gGPULock);
++		patience = millisecondsUntil(&r.waitFence.timeout);
++		if (!gpuWait(r.waitFence.fence, patience)) {
++			ret = kIOReturnTimeout;
++		}
++		IOLockUnlock(gGPULock);
++		break;
++	case kMsmGemMadvise:
++		r.madvise.retained = 1;
++		break;
++	case kMsmSubmitQueueNew:
++		r.queue.id = ++fNextQueue;
++		break;
++	case kMsmSubmitQueueQuery:
++		if (r.query.data != 0 && r.query.len >= sizeof(zero)) {
++			copyout(&zero, (user_addr_t) r.query.data, sizeof(zero));
++		}
++		break;
++	case kDrmGemClose:
++		IOLockLock(gGPULock);
++		b = buffer(r.close.handle);
++		if (b == NULL) {
++			ret = kIOReturnBadArgument;
++		} else {
++			freeBuffer(b);
++		}
++		IOLockUnlock(gGPULock);
++		break;
++	default:
++		IOLog("RedwoodGPU: request %#x (%zu bytes) is not known here\n", selector, size);
++		ret = kIOReturnUnsupported;
++		break;
++	}
++	if (ret == kIOReturnSuccess && args->structureOutput != NULL) {
++		if (args->structureOutputSize > size) {
++			args->structureOutputSize = (uint32_t) size;
++		}
++		memcpy(args->structureOutput, &r, args->structureOutputSize);
++	}
++	return ret;
++}
++#endif /* NEGRONI */
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index c7855a3..e18b275 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -15,6 +15,7 @@ iokit/Kernel/arm/NegroniKeyStore.cpp                               optional ioki
+ iokit/Kernel/arm/NegroniWatchdog.cpp                               optional iokitcpp
+ iokit/Kernel/arm/NegroniSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/NegroniFramebuffer.cpp                            optional iokitcpp
++iokit/Kernel/arm/NegroniGPU.cpp                                    optional iokitcpp
+ iokit/Kernel/arm/NegroniBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/NegroniHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
