@@ -1,16 +1,17 @@
 diff --git a/bsd/dev/negroni_adreno.c b/bsd/dev/negroni_adreno.c
-index 1e145df..1ab74d7 100644
+index 1e145df..053d76b 100644
 --- a/bsd/dev/negroni_adreno.c
 +++ b/bsd/dev/negroni_adreno.c
-@@ -61,6 +61,7 @@
+@@ -61,6 +61,8 @@
  #include <pexpert/pexpert.h>
  #include <vm/vm_kern.h>
  #include <arm/caches_internal.h>
 +#include <kern/thread.h>
++#include <kern/sched_prim.h>
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
  extern const void *negroni_fw_get(const char *name, uint32_t *size);
-@@ -2291,6 +2292,61 @@ negroni_gpu_report(const char *why)
+@@ -2291,6 +2293,61 @@ negroni_gpu_report(const char *why)
  	space_faulted(&core_space);
  }
  
@@ -72,7 +73,7 @@ index 1e145df..1ab74d7 100644
  /* After step 22 with negroniadreno_keep=1: the fences start at 0 and the service is made. */
  static void
  gpu_keep(void)
-@@ -2305,6 +2361,13 @@ gpu_keep(void)
+@@ -2305,6 +2362,13 @@ gpu_keep(void)
  	gpu_kept = true;
  	snprintf(negroni_gpu_badge, sizeof(negroni_gpu_badge), "GPU KEPT");
  	printf("NEGRONI GPU: the 3D core stays on; RedwoodGPU for programs\n");
