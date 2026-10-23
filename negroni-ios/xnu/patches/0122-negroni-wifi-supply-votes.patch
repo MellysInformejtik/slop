@@ -1,0 +1,328 @@
+--- a/bsd/dev/negroni_rpmh.c
++++ b/bsd/dev/negroni_rpmh.c
+@@ -1,5 +1,5 @@
+ /*
+- * NEGRONI PM6150L L11C bring-up; see report.md for DT and source evidence.
++ * NEGRONI SM8450 apps-DRV2 regulator votes (touch and QCA6490 supplies).
+  * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
+  * No sleep/wake programming, SPMI writes, GIC handler, or timeout recovery.
+  */
+@@ -12,15 +12,18 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int negroni_rpmh_vreg_enable(const char *res, unsigned mv);
++int negroni_rpmh_wifi_enable(const char *res, unsigned mv);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+-#define RH_RSC_PA       0x18220000u
+-#define RH_TCS_PA       0x18220d00u
++/* SM8450 apps_rsc drv-2 (sm8450.dtsi rsc@17a00000: tcs-offset 0xd00, ACTIVE 3, SLEEP 2, WAKE 2, CONTROL 0) */
++#define RH_RSC_PA       0x17a20000u
++#define RH_TCS_PA       0x17a20d00u
+ #define RH_TCS_SIZE     0x3000u
+-#define RH_DICT_PA      0x0c3f000cu
++#define RH_DB_PA        0x80860000u     /* aop_cmd_db_mem, reserved memory */
++#define RH_DB_SIZE      0x20000u
+ #define RH_DRV          2u
+-#define RH_ACTIVE_N     2u       /* DT order: ACTIVE 2, SLEEP 3, WAKE 3 */
+-#define RH_NORMAL_N     8u       /* hidden CONTROL TCS is not in this bank */
++#define RH_ACTIVE_N     3u
++#define RH_NORMAL_N     7u
+ #define RH_TCS_STRIDE   0x2a0u
+ #define RH_CMD_STRIDE   0x14u
+ #define RH_IRQ_EN       0x00u
+@@ -46,7 +49,7 @@
+ #define RH_VRM          4u
+ #define RH_TIMEOUT_US   100000u
+ 
+-static vm_offset_t rh_rsc, rh_tcs, rh_dict, rh_db;
++static vm_offset_t rh_rsc, rh_tcs, rh_db;
+ static uint32_t rh_db_size;
+ static unsigned rh_ncpt;
+ static unsigned rh_lock;
+@@ -55,7 +58,8 @@
+ static uint32_t
+ rh_read(vm_offset_t base, uint32_t off)
+ {
+-	uint32_t v = *(volatile uint32_t *)(base + off);
++	uint32_t v;
++	__asm__ volatile("ldr %w0, [%1]" : "=r" (v) : "r" (base + off) : "memory");
+ 	__asm__ volatile("dmb oshld" ::: "memory");
+ 	return v;
+ }
+@@ -64,7 +68,7 @@
+ rh_write(vm_offset_t base, uint32_t off, uint32_t value)
+ {
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+-	*(volatile uint32_t *)(base + off) = value;
++	__asm__ volatile("str %w0, [%1]" : : "r" (value), "r" (base + off) : "memory");
+ 	__asm__ volatile("dsb osh" ::: "memory");
+ }
+ 
+@@ -106,10 +110,7 @@
+ 	if (!rh_tcs) {
+ 		rh_tcs = ml_io_map(RH_TCS_PA, RH_TCS_SIZE);
+ 	}
+-	if (!rh_dict) {
+-		rh_dict = ml_io_map(RH_DICT_PA, 8);
+-	}
+-	if (!rh_rsc || !rh_tcs || !rh_dict) {
++	if (!rh_rsc || !rh_tcs) {
+ 		printf("NEGRONI RPMH: RSC/locator mapping failed\n");
+ 		return ENOMEM;
+ 	}
+@@ -129,21 +130,11 @@
+ 		return ENODEV;
+ 	}
+ 	if (!rh_db) {
+-		uint32_t pa = rh_read(rh_dict, 0);
+-		uint32_t size = rh_read(rh_dict, 4);
+-		printf("NEGRONI RPMH: cmd-db locator=%#x pa=%#x size=%#x\n", RH_DICT_PA, pa, size);
+-		/* Firmware supplies the reserved RAM address; never scan physical RAM. */
+-		if (pa < 0x80000000u || (pa & 3u) || (size & 3u) ||
+-		    size < RH_DB_HEADER || size > RH_DB_MAX ||
+-		    (uint64_t)pa + size > 0x100000000ULL) {
+-			printf("NEGRONI RPMH: invalid cmd-db locator\n");
+-			return EINVAL;
+-		}
+-		rh_db = ml_io_map(pa, size);
++		rh_db = ml_io_map(RH_DB_PA, RH_DB_SIZE);
+ 		if (!rh_db) {
+ 			return ENOMEM;
+ 		}
+-		rh_db_size = size;
++		rh_db_size = RH_DB_SIZE;
+ 	}
+ 	uint32_t db_version = rh_read(rh_db, 0);
+ 	uint32_t magic = rh_read(rh_db, 4);
+@@ -209,17 +200,26 @@
+ rh_free(unsigned t)
+ {
+ 	uint32_t b = t * RH_TCS_STRIDE;
+-	/* Idle alone is insufficient: a sleep/wake payload can be armed and idle. */
+-	return rh_read(rh_tcs, b + RH_STATUS) != 0 &&
+-	    rh_read(rh_tcs, b + RH_STATUS) != 0xffffffffu &&
+-	    rh_read(rh_tcs, b + RH_CONTROL) == 0 &&
+-	    rh_read(rh_tcs, b + RH_ENABLE) == 0 &&
+-	    rh_read(rh_tcs, b + RH_WAIT) == 0 &&
+-	    !(rh_read(rh_tcs, RH_IRQ_STATUS) & (1u << t));
++	uint32_t idle = rh_read(rh_tcs, b + RH_STATUS);
++	uint32_t enabled = rh_read(rh_tcs, b + RH_ENABLE);
++	if (!idle || idle == 0xffffffffu || (rh_read(rh_tcs, b + RH_CONTROL) & RH_TRIGGER) ||
++	    (enabled & ~((1u << rh_ncpt) - 1u))) {
++		return false;
++	}
++	/* UEFI retains completed ACTIVE commands. Never reuse pending requests. */
++	for (unsigned c = 0; c < rh_ncpt; ++c) {
++		if (enabled & (1u << c)) {
++			uint32_t status = rh_read(rh_tcs, b + RH_CMD_STATUS + c * RH_CMD_STRIDE);
++			if (status == 0xffffffffu || (status & (RH_ISSUED | RH_COMPLETE)) != (RH_ISSUED | RH_COMPLETE)) {
++				return false;
++			}
++		}
++	}
++	return true;
+ }
+ 
+ static int
+-rh_send(uint32_t address, unsigned mv)
++rh_send(uint32_t address, unsigned mv, int mode)
+ {
+ 	int chosen = -1;
+ 	for (unsigned t = 0; t < RH_ACTIVE_N; ++t) {
+@@ -232,9 +232,9 @@
+ 			return EIO;
+ 		}
+ 		for (unsigned c = 0; c < rh_ncpt; ++c) {
+-			if ((enabled & (1u << c)) &&
++			if (!rh_free(t) && (enabled & (1u << c)) &&
+ 			    (rh_read(rh_tcs, b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == address) {
+-				printf("NEGRONI RPMH: conflicting inherited L11C request in TCS%u\n", t);
++				printf("NEGRONI RPMH: conflicting inherited request for %#x in TCS%u\n", address, t);
+ 				return EBUSY;
+ 			}
+ 		}
+@@ -266,11 +266,25 @@
+ 	}
+ 	/* From here an uncertain write/timeout quarantines our slot for this boot. */
+ 	rh_poisoned = true;
+-	/* HPM (raw 7) is supported by this PMIC5 LDO; enable comes last. */
+-	const uint32_t offsets[3] = {0, 8, 4};
+-	const uint32_t values[3] = {mv, 7, 1};
+-	printf("NEGRONI RPMH: TCS%u ACTIVE %u mV mode=7 enable=1 irq-enable=%#x\n", t, mv, irq_en);
+-	for (unsigned c = 0; c < 3; ++c) {
++	/* Consume only our proven-idle slot's inherited completion before reuse. */
++	if (!rh_sync(b + RH_CONTROL, 0) || !rh_sync(b + RH_ENABLE, 0) || !rh_sync(b + RH_WAIT, 0)) {
++		return EIO;
++	}
++	rh_write(rh_tcs, RH_IRQ_CLEAR, bit);
++	if (rh_read(rh_tcs, RH_IRQ_STATUS) & bit) {
++		return EIO;
++	}
++	/* voltage, optional mode, enable last (VRM: +0 voltage mV, +4 enable, +8 mode) */
++	uint32_t offsets[3] = {0, 8, 4}, values[3] = {mv, (uint32_t)mode, 1};
++	unsigned ncmd = 3;
++	if (mode < 0) {
++		offsets[1] = 4;
++		values[1] = 1;
++		ncmd = 2;
++	}
++	uint32_t cmdmask = (1u << ncmd) - 1u;
++	printf("NEGRONI RPMH: TCS%u ACTIVE %u mV mode=%d enable=1 irq-enable=%#x\n", t, mv, mode, irq_en);
++	for (unsigned c = 0; c < ncmd; ++c) {
+ 		uint32_t cmd = b + c * RH_CMD_STRIDE;
+ 		if (!rh_sync(cmd + RH_MSGID, RH_WRITE_ACK) ||
+ 		    !rh_sync(cmd + RH_ADDR, address + offsets[c]) ||
+@@ -278,7 +292,7 @@
+ 			return EIO;
+ 		}
+ 	}
+-	if (!rh_sync(b + RH_WAIT, 7) || !rh_sync(b + RH_ENABLE, 7) ||
++	if (!rh_sync(b + RH_WAIT, cmdmask) || !rh_sync(b + RH_ENABLE, cmdmask) ||
+ 	    !rh_sync(b + RH_CONTROL, 0) || !rh_sync(b + RH_CONTROL, RH_AMC_EN)) {
+ 		return EIO;
+ 	}
+@@ -289,7 +303,7 @@
+ 		irq = rh_read(rh_tcs, RH_IRQ_STATUS);
+ 		idle = rh_read(rh_tcs, b + RH_STATUS);
+ 		bool complete = true;
+-		for (unsigned c = 0; c < 3; ++c) {
++		for (unsigned c = 0; c < ncmd; ++c) {
+ 			status[c] = rh_read(rh_tcs, b + RH_CMD_STATUS + c * RH_CMD_STRIDE);
+ 			complete &= status[c] != 0xffffffffu &&
+ 			    (status[c] & (RH_ISSUED | RH_COMPLETE)) == (RH_ISSUED | RH_COMPLETE);
+@@ -320,18 +334,13 @@
+ 		return EIO;
+ 	}
+ 	rh_poisoned = false;
+-	printf("NEGRONI RPMH: L11C ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("NEGRONI RPMH: ACTIVE vote for %#x complete\n", address);
+ 	return 0;
+ }
+ 
+-int
+-negroni_rpmh_vreg_enable(const char *res, unsigned mv)
+-{
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+-		printf("NEGRONI RPMH: expected ldoc11 and 2950..3400 mV\n");
+-		return EINVAL;
+-	}
++static int
++rh_vreg_enable(const char *res, unsigned mv, int mode)
++{
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+ 		return EBUSY;
+ 	}
+@@ -346,7 +355,7 @@
+ 		error = rh_lookup(res, &address);
+ 	}
+ 	if (!error) {
+-		error = rh_send(address, mv);
++		error = rh_send(address, mv, mode);
+ 	}
+ out:
+ 	if (error) {
+@@ -356,6 +365,32 @@
+ 	return error;
+ }
+ 
++int
++negroni_rpmh_vreg_enable(const char *res, unsigned mv)
++{
++	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
++		return EINVAL;
++	}
++	return rh_vreg_enable(res, mv, 7);
++}
++
++int
++negroni_rpmh_wifi_enable(const char *res, unsigned mv)
++{
++	/* Downstream QCA6490 supply voltages, also inside mainline board ranges.
++	 * SMPS votes must not inherit the touch LDO's raw high-power mode. */
++	static const struct { const char *name; unsigned mv; } rails[] = {
++		{ "smpe2", 1012 }, { "smpb11", 966 }, { "smpb10", 1800 },
++		{ "smpc1", 1900 }, { "smpb12", 1350 },
++	};
++	for (unsigned i = 0; res && i < sizeof(rails) / sizeof(rails[0]); i++) {
++		if (!strcmp(res, rails[i].name) && mv == rails[i].mv) {
++			return rh_vreg_enable(res, mv, -1);
++		}
++	}
++	return EINVAL;
++}
++
+ /* Read-only cmd-db lookup of a VRM resource address (Wi-Fi survey, negroni_wifi.c). */
+ int negroni_rpmh_lookup(const char *res, uint32_t *address);
+ 
+--- a/bsd/dev/negroni_wifi.c
++++ b/bsd/dev/negroni_wifi.c
+@@ -13,8 +13,7 @@
+  *   4  reads   PCIe0 PARF (0x1c00000) and the PHY (0x1c06000), only if CFG AHB runs: what ABL left
+  *   5  writes  GCC: the PCIe0 GDSC on, the branch votes (0x62008 bits 0-5, 0x62000 bits 11 12 19 22),
+  *              CLKREF_EN, PHY_RCHNG at 100 MHz (GPLL0 / 6), the pipe mux on XO until the PHY runs
+- *   6  writes  TLMM: PERST (94) low, WLAN_EN (80) high, the chip given 50 ms (its rails are the ones step 3
+- *              names; they are left as the firmware set them)
++ *   6  writes  TLMM: PERST (94) low, WLAN_EN (80) high, the chip given 50 ms after voting all five supplies at their board voltages
+  *   7  writes  the controller (Linux qcom_pcie_init_2_7_0) and the PHY (qmp_pcie_init/power_on, the
+  *              sm8450 gen3x1 tables), pipe mux to the PHY, waits for PHYSTATUS
+  *   8  writes  the root port (bridge class, bus 0 -> 1), iATU 0 bus 1 config at 0x60100000 (ECAM layout),
+@@ -34,6 +33,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void negroni_wifi_init(void);
++extern int negroni_rpmh_wifi_enable(const char *res, unsigned mv);
+ extern uint32_t negroni_probe_wifi;
+ 
+ /* corner badge, second line (NegroniFramebuffer) */
+@@ -80,6 +80,7 @@
+ #define GCC_PCIE_0_PHY_BCR      0x7c01c
+ #define GCC_PCIE_0_NOCSR_COM_PHY_BCR 0x7c020
+ #define GCC_PCIE_0_PIPE_MUX     0x7b060         /* 0: the PHY's pipe clock, 2: XO */
++#define GCC_PCIE_0_AUX_RCGR     0x7b064
+ #define GCC_PCIE_0_RCHNG_RCGR   0x7b048
+ #define GCC_PCIE_0_CLKREF_EN    0x9c004
+ #define GCC_VOTE_0              0x62000
+@@ -274,7 +275,17 @@
+ 	wr(gcc + GCC_PCIE_0_PIPE_MUX, 2);                       /* XO until the PHY makes the pipe clock */
+ 	wr(gcc + GCC_PCIE_0_RCHNG_RCGR + 4, 1u << 8 | (2 * 6 - 1));     /* GPLL0 main / 6 = 100 MHz */
+ 	set(gcc + GCC_PCIE_0_RCHNG_RCGR, 1u);
+-	wait_for(gcc + GCC_PCIE_0_RCHNG_RCGR, 1u, 0, 10);
++	if (!wait_for(gcc + GCC_PCIE_0_RCHNG_RCGR, 1u, 0, 10)) {
++		printf("NEGRONI WIFI: 5 stop: RCHNG clock update timed out\n");
++		return false;
++	}
++	/* AUX uses XO / 1 = 19.2 MHz, not an unverified inherited RCG rate. */
++	wr(gcc + GCC_PCIE_0_AUX_RCGR + 4, 1u);
++	set(gcc + GCC_PCIE_0_AUX_RCGR, 1u);
++	if (!wait_for(gcc + GCC_PCIE_0_AUX_RCGR, 1u, 0, 10)) {
++		printf("NEGRONI WIFI: 5 stop: AUX clock update timed out\n");
++		return false;
++	}
+ 	set(gcc + GCC_VOTE_0, GCC_VOTE_0_PCIE0);
+ 	set(gcc + GCC_VOTE_2, GCC_VOTE_2_PCIE0 & ~(1u << 4));  /* the pipe clock after the PHY (step 7) */
+ 	set(gcc + GCC_PCIE_0_CLKREF_EN, 1u);
+@@ -298,8 +309,21 @@
+ static bool
+ step_chip_on(void)
+ {
+-	announce("hold PERST low and drive WLAN_EN high (TLMM writes)");
++	static const struct { const char *name; unsigned mv; } rails[] = {
++		{ "smpe2", 1012 }, { "smpb11", 966 }, { "smpb10", 1800 },
++		{ "smpc1", 1900 }, { "smpb12", 1350 },
++	};
++	announce("vote QCA6490 supplies before WLAN_EN (SM8450 apps DRV2)");
+ 	gpio_out(PERST_PIN, false);
++	gpio_out(WLAN_EN_PIN, false);
++	for (unsigned i = 0; i < sizeof(rails) / sizeof(rails[0]); i++) {
++		int error = negroni_rpmh_wifi_enable(rails[i].name, rails[i].mv);
++		printf("NEGRONI WIFI: 6 %s %u mV: errno %d\n", rails[i].name, rails[i].mv, error);
++		if (error) {
++			printf("NEGRONI WIFI: 6 stop: WLAN remains in reset; no link attempt\n");
++			return false;
++		}
++	}
+ 	gpio_out(WLAN_EN_PIN, true);
+ 	delay(50000);
+ 	printf("NEGRONI WIFI: 6 WLAN_EN out %u, PERST out %u, SW_CTRL in %u\n", (rd(tlmm + TLMM_PIN(WLAN_EN_PIN) + 4) >> 1) & 1,
