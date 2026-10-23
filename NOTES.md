@@ -765,3 +765,18 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   (start + SMP2P/GLINK/QRTR) — upper layers (APR, redwood_sound.c) do not apply.
 - BLOCKER: no ADSP firmware locally (adsp.mdt/.bNN live in modem_a). User will dump modem_a later (OrangeFox).
   Phone currently: slot A = iOS chain (vendor_boot ours, vbmeta disabled, dtbo erased).
+- **2026-10-23 USB live log (patch 0119, CI 39981493013):** negroni_usb.c had sweet (sdmmagpie) GCC offsets; now SM8450
+  (usb30_prim GDSC 0x49004, CBCRs 0x49018/20/24/84/88/5c), QUSB2 read dropped, GCTL PRTCAPDIR forced to device.
+  CDC-ECM 1209:0001, phone 192.168.7.2 -> UDP 5140 to 192.168.7.1. Windows has no ECM driver: tools/negroni-usbnet.sh
+  attaches it to WSL via usbipd-win (not installed yet; not in the scoop main bucket) + cdc_ether + sweet-usbnet.sh.
+  Image unixnu/out/boot_a-usb-gpu.img (sha bcc6920c…): negroniusb=2 + negroniadreno=22 negroniadreno_keep=1. Untested.
+- **2026-10-23 boots:** (a) 0118 + gl_test: ladder stopped at 12, firmware area wiped by the fastboot userdata
+  flash; gl_test ran on softpipe and drew correctly (logs/boot-0118-gltest.txt). Firmware area rewritten from
+  OrangeFox (user-approved, sha b25a66ae verified). modem_a dumped read-only -> ~/ios-work/negroni-firmware/modem
+  (sha dba3d3bb…, ADSP files in img/image). Slot A had stale vendor_boot and vbmeta flags 0 after low-battery
+  fastboot writes; rewritten in OrangeFox with dd (vbmeta flags 3) and verified. NOTE: fastboot flash userdata
+  wipes the firmware area; write roots from OrangeFox or re-dd fwarea.bin after.
+  (b) 0119 USB+GPU (boot_a-usb-gpu.img): all 22 steps, "3D core stays on; RedwoodGPU"; USB enumerated by the PC
+  (address 3, descriptors); then panic after unlock, before gl_test: phystokv_range illegal PA 0xc7a24000 (low DRAM,
+  not XNU-managed; caller ml_static_vtop.cold.1); not in the log (logs/boot-0119-panic.txt ends at bluetoothd).
+  Bisecting: boot_a = boot_a-gpu-keep.img (0118, GPU kept, negroniusb=0) written in OrangeFox, verified.
