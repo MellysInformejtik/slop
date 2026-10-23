@@ -741,3 +741,11 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Loaded original GPT, rebooted recovery so the kernel reread it, then verified userdata is sda14 LBA 2839276..30271482 = 104.6 GiB (112,362,319,872 bytes); sda15/ESP and sda16/win are absent. Entries 1-13 are preserved. `sgdisk --verify` reports no problems, with warnings that the original 32-entry GPT table is below the GPT minimum and has an unusual gap before the first usable sector; these warnings were also present in the saved original layout.
 - Recovery's original `recovery.fstab` specifies F2FS for userdata. Formatted sda14 with `make_f2fs -g android -f`; `fsck.f2fs --dry-run` passed with `encrypt`, `verity`, and `quota_ino` features and no reported filesystem errors. `/data` is currently unmounted. Windows/ESP contents were erased by the selected restore. No boot, vendor_boot, dtbo, vbmeta, modem, persist, or recovery partitions were changed.
 - Current state: phone remains connected in OrangeFox recovery. Android boot has not been tested; if the custom Windows/UEFI boot chain is still installed, Android boot-chain restoration from the existing backups is a separate step and requires checking the current boot slots first.
+
+## 2026-10-23 iOS root apps + GPU image
+- Full root ~/ios-work/ios16-root-full.simg booted; user sees only Photos, App Store, Settings. Read with 7z: 142 apps in
+  /Applications; Calendar/Notes/Weather/Maps/Mail/Health/... (33) sit in /private/var/staged_system_apps (installed
+  by first-boot migration on a real phone, which our tweaks skip). New negroni-ios/tools/install-staged-apps.sh moves
+  them into /Applications and drops their AppPlaceholders; build-ios16-root.sh step 3b runs it. Not yet run (needs sudo).
+- unixnu/out/boot_a-gpu.img (sha cbf56e54…): default args + negroniadreno=22 (ladder then gpu_stop), Mu without
+  NegroniPcieDxe. unixnu/out/boot_a.img = normal no-GPU image.

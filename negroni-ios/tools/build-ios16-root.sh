@@ -63,9 +63,12 @@ umount "$mnt"
 trap - EXIT
 fsck.hfsplus -fy "$out" | grep -v 'Illegal name' || true
 
+# 3b. the removable Apple apps (Calendar, Notes, Weather, Maps ...) from staged_system_apps into /Applications
+bash "$repo/negroni-ios/tools/install-staged-apps.sh" "$out"
+
 # 4. Procursus + Sileo (add-sileo-root.sh; Sileo is registered only once
 #    /var/jb/var/negroni-no-uicache is deleted)
-bash "$repo/negroni-ios/tools/add-sileo-root.sh" "$out"
+[ -n "${SKIP_SILEO:-}" ] || bash "$repo/negroni-ios/tools/add-sileo-root.sh" "$out"
 
 # 5. sparse image for fastboot
 img2simg "$out" "${out%.img}.simg"
