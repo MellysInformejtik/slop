@@ -1,0 +1,69 @@
+diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
+index a472f61..5653502 100644
+--- a/iokit/Kernel/arm/NegroniGPU.cpp
++++ b/iokit/Kernel/arm/NegroniGPU.cpp
+@@ -189,36 +189,30 @@ public:
+ 
+ OSDefineMetaClassAndStructors(RedwoodGPU, IOService);
+ 
++/*
++ * A personality of IOResources (iokit/KernelConfigTables.cpp) that waits for the resource
++ * "NegroniGPUKept": the GPU ladder runs after IOKit's first matching, and publishes it when the
++ * 3D core stays on (NegroniGPUStart). Created and started by IOKit, as the other services here.
++ */
+ bool
+ RedwoodGPU::start(IOService * provider)
+ {
+-	if (!IOService::start(provider)) {
++	if (!negroni_gpu_ready() || !IOService::start(provider)) {
+ 		return false;
+ 	}
++	if (gGPULock == NULL) {
++		gGPULock = IOLockAlloc();
++	}
+ 	setProperty(kIOUserClientClassKey, "RedwoodGPUUserClient");
+-	setName("RedwoodGPU");
+ 	registerService();
++	IOLog("RedwoodGPU: registered\n");
+ 	return true;
+ }
+ 
+ void
+ NegroniGPUStart(void)
+ {
+-	IOService * provider = IOService::getPlatform();
+-	RedwoodGPU * gpu;
+-
+-	gGPULock = IOLockAlloc();
+-	gpu = OSTypeAlloc(RedwoodGPU);
+-	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
+-		OSSafeReleaseNULL(gpu);
+-		IOLog("RedwoodGPU: cannot create the service\n");
+-		return;
+-	}
+-	if (!gpu->start(provider)) {
+-		gpu->detach(provider);
+-		IOLog("RedwoodGPU: the service did not start\n");
+-	}
+-	gpu->release();
++	IOService::publishResource("NegroniGPUKept", kOSBooleanTrue);
+ }
+ 
+ struct gpu_buffer {
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 418ec11..1f7bc86 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -73,6 +73,12 @@ const char * gIOKernelConfigTables =
+     "     'IOMatchCategory' = NegroniHIDButtons;"
+     "   },"
+     "   {"
++    "     'IOClass'         = RedwoodGPU;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = RedwoodGPU;"
++    "     'IOResourceMatch' = NegroniGPUKept;"
++    "   },"
++    "   {"
+     "     'IOClass'         = NegroniHIDTouch;"
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = NegroniHIDTouch;"
