@@ -59,6 +59,32 @@ static const NEGRONI_GPU_RANGE ExpectedRanges[NEGRONI_GPU_RANGE_COUNT] = {
     { 0x0b290000, 0x10000, NULL }, { 0x03d61000, 0x00800, NULL },
 };
 
+/*
+ * Stage, Status, Detail (and a few named values) under
+ * HKLM\SYSTEM\CurrentControlSet\Services\NegroniGpuWddm: there is no debugger on the phone, and
+ * windows\diag\Negroni diagnostics.cmd reads them back. PASSIVE_LEVEL only.
+ */
+enum {
+    NG_TRACE_DRIVER_ENTRY = 1, NG_TRACE_ADD_DEVICE, NG_TRACE_START, NG_TRACE_DEVICE_INFO,
+    NG_TRACE_RANGES_MAPPED, NG_TRACE_FIRMWARE, NG_TRACE_PREFLIGHT, NG_TRACE_STARTED
+};
+
+static VOID
+NgTraceValue(PCWSTR Name, ULONG Value)
+{
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL)
+        (VOID)RtlWriteRegistryValue(RTL_REGISTRY_SERVICES, L"NegroniGpuWddm", Name, REG_DWORD,
+                                    &Value, sizeof(Value));
+}
+
+static VOID
+NgTrace(ULONG Stage, NTSTATUS Status, ULONG Detail)
+{
+    NgTraceValue(L"Stage", Stage);
+    NgTraceValue(L"Status", (ULONG)Status);
+    NgTraceValue(L"Detail", Detail);
+}
+
 static BOOLEAN
 NegroniGpuReadMappedRegister(NEGRONI_GPU_ADAPTER *Adapter, ULONG RangeIndex,
                              ULONG Offset, PULONG Value)
@@ -94,6 +120,7 @@ NegroniGpuReadOnlyPreflight(NEGRONI_GPU_ADAPTER *Adapter)
     }
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
         "NegroniGpuWddm: read-only GCC GPU_CFG_AHB_CBCR=%#x\n", gccCfg);
+    NgTraceValue(L"GccGpuCfgAhb", gccCfg);
     if (gccCfg & NG_CBCR_OFF) {
         DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
             "NegroniGpuWddm: GCC AHB clock is off; skip GPUCC/GMU reads\n");
@@ -115,6 +142,10 @@ NegroniGpuReadOnlyPreflight(NEGRONI_GPU_ADAPTER *Adapter)
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
         "NegroniGpuWddm: read-only GPUCC CX=%#x GX=%#x AHB=%#x GMUCLK=%#x\n",
         cx, gx, ahb, gmuClock);
+    NgTraceValue(L"GpuccCxGdsc", cx);
+    NgTraceValue(L"GpuccGxGdsc", gx);
+    NgTraceValue(L"GpuccAhb", ahb);
+    NgTraceValue(L"GpuccGmuClock", gmuClock);
     if (!(cx & NG_GDSC_PWR_ON) || (gmuClock & NG_CBCR_OFF)) {
         DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
             "NegroniGpuWddm: CX/GMU clock not ready; skip GMU CX reads\n");
@@ -137,6 +168,8 @@ NegroniGpuReadOnlyPreflight(NEGRONI_GPU_ADAPTER *Adapter)
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
         "NegroniGpuWddm: read-only GMU AO counter %#x -> %#x; FW_INIT=%#x\n",
         counter0, counter1, fwInit);
+    NgTraceValue(L"GmuAoCounterDelta", counter1 - counter0);
+    NgTraceValue(L"GmuFwInit", fwInit);
 }
 
 static VOID
@@ -267,6 +300,7 @@ NegroniGpuAddDevice(PDEVICE_OBJECT PhysicalDeviceObject,
     RtlZeroMemory(adapter, sizeof(*adapter));
     adapter->Pdo = PhysicalDeviceObject;
     *MiniportDeviceContext = adapter;
+    NgTrace(NG_TRACE_ADD_DEVICE, STATUS_SUCCESS, 0);
     return STATUS_SUCCESS;
 }
 
@@ -288,8 +322,11 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
         NumberOfVideoPresentSources == NULL || NumberOfChildren == NULL ||
         DxgkInterface->DxgkCbGetDeviceInformation == NULL ||
         DxgkInterface->DxgkCbMapMemory == NULL ||
-        DxgkInterface->DxgkCbUnmapMemory == NULL)
+        DxgkInterface->DxgkCbUnmapMemory == NULL) {
+        NgTrace(NG_TRACE_START, STATUS_INVALID_PARAMETER, 0);
         return STATUS_INVALID_PARAMETER;
+    }
+    NgTrace(NG_TRACE_START, STATUS_PENDING, 0);
     NegroniGpuUnmapRanges(adapter);
     *NumberOfVideoPresentSources = 0; // render-only: no display ownership
     *NumberOfChildren = 0;
@@ -298,8 +335,11 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
     RtlZeroMemory(&deviceInfo, sizeof(deviceInfo));
     status = adapter->Dxgk.DxgkCbGetDeviceInformation(
         adapter->Dxgk.DeviceHandle, &deviceInfo);
-    if (!NT_SUCCESS(status) || deviceInfo.TranslatedResourceList == NULL)
-        return NT_SUCCESS(status) ? STATUS_DEVICE_CONFIGURATION_ERROR : status;
+    if (!NT_SUCCESS(status) || deviceInfo.TranslatedResourceList == NULL) {
+        status = NT_SUCCESS(status) ? STATUS_DEVICE_CONFIGURATION_ERROR : status;
+        NgTrace(NG_TRACE_DEVICE_INFO, status, 0);
+        return status;
+    }
 
     translated = deviceInfo.TranslatedResourceList;
     for (i = 0; i < translated->Count; ++i) {
@@ -322,7 +362,9 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
                         TRUE, FALSE, MmNonCached, &va);
                     if (!NT_SUCCESS(status) || va == NULL) {
                         NegroniGpuUnmapRanges(adapter);
-                        return NT_SUCCESS(status) ? STATUS_INSUFFICIENT_RESOURCES : status;
+                        status = NT_SUCCESS(status) ? STATUS_INSUFFICIENT_RESOURCES : status;
+                        NgTrace(NG_TRACE_RANGES_MAPPED, status, j);
+                        return status;
                     }
                     adapter->Ranges[j].Start = ExpectedRanges[j].Start;
                     adapter->Ranges[j].Length = ExpectedRanges[j].Length;
@@ -334,6 +376,9 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
             }
             if (!matched) {
                 NegroniGpuUnmapRanges(adapter);
+                NgTraceValue(L"UnexpectedRangeStart", (ULONG)d->u.Memory.Start.QuadPart);
+                NgTraceValue(L"UnexpectedRangeLength", d->u.Memory.Length);
+                NgTrace(NG_TRACE_RANGES_MAPPED, STATUS_DEVICE_CONFIGURATION_ERROR, memoryCount);
                 return STATUS_DEVICE_CONFIGURATION_ERROR;
             }
         }
@@ -341,15 +386,21 @@ NegroniGpuStartDevice(IN_CONST_PVOID MiniportDeviceContext,
 
     if (memoryCount != NEGRONI_GPU_RANGE_COUNT || adapter->RangeCount != NEGRONI_GPU_RANGE_COUNT) {
         NegroniGpuUnmapRanges(adapter);
+        NgTrace(NG_TRACE_RANGES_MAPPED, STATUS_DEVICE_CONFIGURATION_ERROR, memoryCount << 8 | adapter->RangeCount);
         return STATUS_DEVICE_CONFIGURATION_ERROR;
     }
+    NgTrace(NG_TRACE_RANGES_MAPPED, STATUS_SUCCESS, adapter->RangeCount);
     status = NegroniGpuLoadFirmwarePackage(adapter);
     if (!NT_SUCCESS(status)) {
         NegroniGpuUnmapRanges(adapter);
+        NgTrace(NG_TRACE_FIRMWARE, status, 0);
         return status;
     }
+    NgTrace(NG_TRACE_FIRMWARE, STATUS_SUCCESS, (ULONG)adapter->GmuBlockCount << 16 | adapter->ZapImage.SegmentCount);
     NegroniGpuReadOnlyPreflight(adapter);
+    NgTrace(NG_TRACE_PREFLIGHT, STATUS_SUCCESS, 0);
     adapter->Started = TRUE;
+    NgTrace(NG_TRACE_STARTED, STATUS_SUCCESS, adapter->RangeCount);
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
                "NegroniGpuWddm: WDDM 2.7 resources and firmware ready; no GPU register writes issued\n");
     return STATUS_SUCCESS;
@@ -466,5 +517,9 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     init.DxgkDdiDestroyContext = NgGpuDestroyContextObject;
     init.DxgkDdiCreateAllocation = NegroniGpuCreateAllocation;
     init.DxgkDdiDestroyAllocation = NegroniGpuDestroyAllocation;
-    return DxgkInitialize(DriverObject, RegistryPath, &init);
+    {
+        NTSTATUS status = DxgkInitialize(DriverObject, RegistryPath, &init);
+        NgTrace(NG_TRACE_DRIVER_ENTRY, status, 0);
+        return status;
+    }
 }
