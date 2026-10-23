@@ -728,7 +728,7 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   controller init per Linux qcom_pcie_init_2_7_0, PHY = Linux sm8450 gen3x1 tables (76 writes, NegroniPciePhy.h),
   root port class 0604 bus 0->1, iATU0 CFG0 0x60100000 -> bus 1 (ECAM layout), iATU1 MEM 0x60300000-0x63ffffff,
   LTSSM, expects 17cb:1103 on bus 1. Prints NPCIE: lines, pauses 5 s.
-- Test image ~/ios-work/winpe/boot_a-pcie-test.img (sha 6a739b72…), NOT flashed. boot_a-windows-keys.img is
+- Test 1 (6a739b72): gdsc Success, then data abort FAR 0x1C01000 (PARF unmapped). Fix: gDS AddMemorySpace/SetMemorySpaceAttributes for 0x1C00000+64K and 0x60000000-0x63ffffff. Test image boot_a-pcie-test.img (sha 336b1c69…), not yet flashed. boot_a-windows-keys.img is
   the last known-good-ish image (no PCIe driver).
 - Guess, unverified: QCA6490 rails (pm8350 s10/s11/s12, pm8350c s1, pmr735a s2) and PHY rails l5b/l6b are already on
   in UEFI (l5b/l6b are shared with the UFS PHY).
