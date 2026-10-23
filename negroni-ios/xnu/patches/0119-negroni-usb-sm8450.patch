@@ -1,0 +1,84 @@
+diff --git a/bsd/dev/negroni_usb.c b/bsd/dev/negroni_usb.c
+index c745243..f50d68b 100644
+--- a/bsd/dev/negroni_usb.c
++++ b/bsd/dev/negroni_usb.c
+@@ -1,10 +1,10 @@
+ /*
+  * NEGRONI: USB bring-up, step 1 - read-only state probe.
+  *
+- * The phone's USB is a Synopsys DWC3 (USB 2.0 only, maximum-speed
+- * high-speed) at 0x0a600000 behind Qualcomm's dwc-usb3-msm wrapper, with a
+- * QUSB2 PHY at 0x088e2000; its power domain is the USB30_PRIM GDSC and its
+- * clocks come from GCC (offsets from Linux gcc-sdmmagpie.c). ABL uses this
++ * The phone's USB is a Synopsys DWC3 at 0x0a600000 behind Qualcomm's
++ * dwc3-qcom wrapper (SM8450, Linux sm8450.dtsi); its power domain is the
++ * USB30_PRIM GDSC and its clocks come from GCC (offsets from Linux
++ * gcc-sm8450.c). The HS PHY (0x088e3000) is left as the firmware set it up. ABL uses this
+  * controller for fastboot; this probe only reports what state it is left
+  * in after `fastboot boot`. It never writes a register, and it touches the
+  * DWC3 / PHY register blocks only when the GCC status registers say their
+@@ -44,26 +44,23 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ 
+ #define GCC_PA                  0x00100000
+ #define GCC_SIZE                0x00090000
+-#define GCC_USB30_PRIM_GDSCR    0x0f004         /* bit 31: power on */
++#define GCC_USB30_PRIM_GDSCR    0x49004         /* bit 31: power on (Linux gcc-sm8450.c) */
+ #define CBCR_CLK_OFF            (1u << 31)
+ 
+ static const struct {
+ 	const char *name;
+ 	uint32_t    off;
+ } usb_cbcr[] = {
+-	{ "master", 0x0f010 },
+-	{ "sleep", 0x0f014 },
+-	{ "utmi", 0x0f018 },
+-	{ "cfg-noc-axi", 0x0502c },
+-	{ "aggre-axi", 0x8201c },
+-	{ "ahb2phy", 0x6a004 },
+-	{ "clkref", 0x8c010 },
++	{ "master", 0x49018 },
++	{ "sleep", 0x49020 },
++	{ "utmi", 0x49024 },
++	{ "cfg-noc-axi", 0x49084 },
++	{ "aggre-axi", 0x49088 },
++	{ "phy-aux", 0x4905c },
+ };
+ 
+ #define DWC3_PA                 0x0a600000
+ #define DWC3_SIZE               0x0000d000
+-#define QUSB2_PA                0x088e2000
+-#define QUSB2_SIZE              0x00000400
+ 
+ static uint32_t
+ usb_rd(vm_offset_t base, uint32_t off)
+@@ -119,19 +116,6 @@ negroni_usb_probe(void)
+ 	if (enabled >= 2) {
+ 		negroni_usb_gadget_start(dwc);
+ 	}
+-	if (cbcr[5] & CBCR_CLK_OFF) {
+-		printf("NEGRONI USB: ahb2phy clock off; QUSB2 PHY not read\n");
+-		return;
+-	}
+-	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+-	if (phy == 0) {
+-		return;
+-	}
+-	/* DT qcom,qusb-phy-reg-offset order (Linux phy-msm-qusb-v2.c): PORT_TUNE1 0x240,
+-	 * PLL_COMMON_STATUS_ONE 0x1a0, PWR_CTRL1 0x210, INTR_CTRL 0x230,
+-	 * PLL_CORE_INPUT_OVERRIDE 0x0a8, TEST1 0x254. */
+-	printf("NEGRONI USB: QUSB2 PLL_STATUS 0x%08x PWR_CTRL1 0x%08x PORT_TUNE1 0x%08x TEST1 0x%08x\n",
+-	    usb_rd(phy, 0x1a0), usb_rd(phy, 0x210), usb_rd(phy, 0x240), usb_rd(phy, 0x254));
+ }
+ 
+ /*
+@@ -866,7 +850,9 @@ negroni_usb_gadget_start(vm_offset_t dwc)
+ 	ud.dma_pa = ptoa_64(pn);
+ 	ud_if_create();
+ 
+-	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
++	/* Port in device mode (Linux dwc3_set_prtcap: GCTL PRTCAPDIR = 2); the firmware may have left it a host. */
++	dwc_wr(GCTL, (dwc_rd(GCTL) & ~(3u << 12)) | (2u << 12));
++	/* Device controller soft reset (PHY and global setup stay as the firmware left them). */
+ 	dwc_wr(DCTL, DCTL_CSFTRST);
+ 	int i;
+ 	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
