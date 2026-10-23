@@ -819,3 +819,14 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - Limits: these are software objects and a future DMA staging contract, not hardware contexts or working acceleration. Driver caps/rendering remain unadvertised; no allocations/paging/submission/reset/interrupt implementation or real Windows adapter test. No CI run or push for this checkpoint. Next implement validated allocation and paging ownership, then hardware/SMMU/firmware execution and the Mesa/UMD bridge; retain fail-closed behavior until the full path is proven.
 
 - 2026-10-23 user-requested rebuild: `build-wddm-prototype.sh` completed successfully (exit 0), producing ARM64 PE32+ native `C:\Users\paw\ios-sweet\windows\NegroniGpu\out\NegroniGpuWddm.sys`, SHA256 `42e1962e8419ff688a40d30f13c97f7e00db59f11f8e97ccfb13f1d386d09fca`. Same source checkpoint plus preserved dirty PM4 changes; no source edits, package refresh, signing, push or device access. Still an incomplete non-installable prototype without acceleration.
+
+## 2026-10-23 userdata split for Andromeda (user-approved, iOS kept)
+- GPT before: b919ff2f… (= 22 Oct original), saved ~/ios-work/negroni-gpt/sda-gpt-before-andromeda.bin.
+- New (4K sectors): 14 userdata 2839276-9130731 (24 GiB, same type 1B81E7E6… and unique GUID B0B9F713…),
+  15 esp 9130732-9261803 (512 MiB, EF00, FAT32 "ESP", fsck clean), 16 win 9261804-30271482 (80.1 GiB, 0700,
+  unformatted: format NTFS from Windows over Mu mass storage). sgdisk --verify clean (same 2 warnings as before).
+  Backup after: ~/ios-work/negroni-gpt/sda-gpt-andromeda-split.bin (efb29ca1…).
+- iOS root intact (HX at byte 1024). GPU fwarea.bin rewritten at userdata block 6288383 (new end - 1025 - 2048),
+  verified b25a66ae…. Log ring moves to the new end automatically.
+- Andromeda: the Lumia 950 build 17686 is 32-bit ARM; SM8450 cores are AArch64-only -> needs an ARM64 build
+  (Surface Duo era). Slot A boot chain is STOCK right now (OrangeFox); restore the iOS chain before booting iOS.
