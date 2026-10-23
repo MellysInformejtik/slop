@@ -8,6 +8,7 @@
 #include "NegroniGpuFirmwareIo.h"
 #include "NegroniGpuAbi.h"
 #include "NegroniGpuObjects.h"
+#include "NegroniGpuAllocation.h"
 
 #define NEGRONI_GPU_TAG 'gNgN'
 #define NEGRONI_GPU_RANGE_COUNT 7
@@ -417,6 +418,26 @@ NegroniGpuQueryAdapterInfo(IN_CONST_HANDLE AdapterHandle,
 }
 
 static NTSTATUS APIENTRY
+NegroniGpuCreateAllocation(IN_CONST_HANDLE AdapterHandle,
+                          INOUT_PDXGKARG_CREATEALLOCATION Args)
+{
+    NEGRONI_GPU_ADAPTER *adapter = (NEGRONI_GPU_ADAPTER *)AdapterHandle;
+    if (!adapter || !adapter->Started)
+        return STATUS_INVALID_DEVICE_STATE;
+    /* No aperture is declared or backed by SMMU paging yet. Keep fail-closed. */
+    return NgGpuCreateAllocations(Args, 0);
+}
+
+static NTSTATUS APIENTRY
+NegroniGpuDestroyAllocation(IN_CONST_HANDLE AdapterHandle,
+                           IN_CONST_PDXGKARG_DESTROYALLOCATION Args)
+{
+    if (!AdapterHandle)
+        return STATUS_INVALID_PARAMETER;
+    return NgGpuDestroyAllocations(Args);
+}
+
+static NTSTATUS APIENTRY
 NegroniGpuCreateDevice(IN_CONST_HANDLE AdapterHandle,
                        INOUT_PDXGKARG_CREATEDEVICE Args)
 {
@@ -443,5 +464,7 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     init.DxgkDdiDestroyDevice = NgGpuDestroyDeviceObject;
     init.DxgkDdiCreateContext = NgGpuCreateContextObject;
     init.DxgkDdiDestroyContext = NgGpuDestroyContextObject;
+    init.DxgkDdiCreateAllocation = NegroniGpuCreateAllocation;
+    init.DxgkDdiDestroyAllocation = NegroniGpuDestroyAllocation;
     return DxgkInitialize(DriverObject, RegistryPath, &init);
 }

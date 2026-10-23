@@ -68,11 +68,42 @@ TestType4(void)
     assert(written == 0);
 }
 
+static void
+TestPacketStream(void)
+{
+    uint32_t stream[10] = {0};
+    uint32_t meInitPayload[] = { 1u, 0x00000003u, 0x20000000u,
+        2u, 0u, 0u, 0u };
+    size_t firstWords = 0, secondWords = 0, packets = 99;
+
+    assert(NgGpuEncodeType7(0x48u, meInitPayload, 7, stream,
+        sizeof(stream) / sizeof(stream[0]), &firstWords));
+    assert(NgGpuEncodeType4Write(0x0800u, 0x12345678u, stream + firstWords,
+        sizeof(stream) / sizeof(stream[0]) - firstWords, &secondWords));
+    assert(firstWords + secondWords == 10);
+    assert(NgGpuValidatePacketStream(stream, 10, 2, &packets));
+    assert(packets == 2);
+
+    packets = 99;
+    assert(!NgGpuValidatePacketStream(stream, 9, 2, &packets));
+    assert(packets == 0);
+    assert(!NgGpuValidatePacketStream(stream, 10, 1, &packets));
+    assert(packets == 0);
+
+    stream[0] ^= 1u << 15; /* corrupt type-7 count parity */
+    assert(!NgGpuValidatePacketStream(stream, 10, 2, &packets));
+    stream[0] ^= 1u << 15;
+    stream[8] = 0; /* type 0 is outside the admitted framing subset */
+    assert(!NgGpuValidatePacketStream(stream, 10, 2, &packets));
+    assert(!NgGpuValidatePacketStream(NULL, 1, 1, &packets));
+}
+
 int
 main(void)
 {
     TestType7();
     TestType4();
+    TestPacketStream();
     puts("A730 PM4 packet encoder tests passed");
     return 0;
 }

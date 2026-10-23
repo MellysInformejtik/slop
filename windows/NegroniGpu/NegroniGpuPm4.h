@@ -13,4 +13,12 @@ int NgGpuEncodeType4Write(uint32_t Register, uint32_t Value,
                           uint32_t *Output, size_t OutputCapacity,
                           size_t *WordsWritten);
 
+/*
+ * Validate only PM4 framing, packet bounds, and header parity. This is not a
+ * security/semantic validator: callers must still whitelist opcodes, registers,
+ * memory references, and engine state before any stream can reach hardware.
+ */
+int NgGpuValidatePacketStream(const uint32_t *Words, size_t WordCount,
+                              size_t MaxPackets, size_t *PacketsValidated);
+
 #endif
