@@ -223,3 +223,16 @@ Dxgkrnl or establish device readiness on Windows.
 
 Contracts: [CreateDevice](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmddi/nc-d3dkmddi-dxgkddi_createdevice),
 [CreateContext](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmddi/nc-d3dkmddi-dxgkddi_createcontext).
+
+### GPU address space (SMMU stage-1 page tables)
+
+`NegroniGpuPageTable.c` builds the page tables of the Adreno SMMU context the 3D core uses:
+39-bit GPU VAs, three levels, 4 KiB pages, the same descriptors as the XNU port on the phone
+(`bsd/dev/negroni_adreno.c` space_map/space_on: inner shareable, AF, nG, unprivileged, optional
+read-only, MAIR index 0 = normal non-cacheable) and the TCR/TCR2/MAIR0/SCTLR values the context
+bank is given there. Tables come from caller callbacks (the KMD will supply contiguous non-paged
+memory and a cache-clean `Publish`); a map that meets a live page or runs out of tables is
+refused and undone; unmap reports what it removed; `NgGpuPtTtbr0` gives the context's TTBR0.
+It is CPU-only: it does not program the SMMU or invalidate its TLB, and nothing calls it yet.
+Host tests (`test-pagetable.c`, in `test-host.sh`) check exact descriptors, rollback, boundary
+table counts, argument rejection and leak-free teardown. Linked into the ARM64 prototype.

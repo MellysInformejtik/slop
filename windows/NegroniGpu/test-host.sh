@@ -29,6 +29,10 @@ cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 "$tmp/test-queue"
 
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -fno-omit-frame-pointer NegroniGpuPageTable.c test-pagetable.c -o "$tmp/test-pagetable"
+"$tmp/test-pagetable"
+
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -fno-omit-frame-pointer NegroniGpuFirmware.c test-firmware-parser.c \
   -o "$tmp/test-firmware"
 "$tmp/test-firmware" "$firmware_dir"
