@@ -788,3 +788,9 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   Image unixnu/out/boot_a-wifi.img (sha 43c631d8…): default args, negroniwifi=9, no GPU keep, USB off. Untested.
   Phone: battery 1%; slot A = boot_a-gpu-keep + our vendor_boot + vbmeta flags 3 (vbmeta had reverted to flags 0
   once: re-check before blaming an image). Disabled vbmeta saved as shim/out/negroni-a/vbmeta_a-disabled.img.
+- **2026-10-23 GPU keep panic bisected:** 0121 watcher (GPU WATCH lines): GPU block state constant to the end
+  (CX/GX on, RSC, ring idle, no SMMU faults); panic between 60 and 70 s; panic-time flush (negroni_log_panic,
+  model_dep.c) did not get the text out. 0122 negroniadreno_service=0 (GPU kept, no service): NO panic (user).
+  0123 trace: no process ever opened RedwoodGPU, so the panic comes from the service's existence. It was attached by
+  hand under the platform expert (getPlatform()); 0124 makes it an IOResources personality matched on the resource
+  "NegroniGPUKept", published by gpu_keep (CI 40007883255). Next: boot 0124 keep + gl_test.
