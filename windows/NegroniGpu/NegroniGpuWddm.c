@@ -7,6 +7,7 @@
 #include "NegroniGpuFirmware.h"
 #include "NegroniGpuFirmwareIo.h"
 #include "NegroniGpuAbi.h"
+#include "NegroniGpuObjects.h"
 
 #define NEGRONI_GPU_TAG 'gNgN'
 #define NEGRONI_GPU_RANGE_COUNT 7
@@ -415,6 +416,16 @@ NegroniGpuQueryAdapterInfo(IN_CONST_HANDLE AdapterHandle,
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS APIENTRY
+NegroniGpuCreateDevice(IN_CONST_HANDLE AdapterHandle,
+                       INOUT_PDXGKARG_CREATEDEVICE Args)
+{
+    NEGRONI_GPU_ADAPTER *adapter = (NEGRONI_GPU_ADAPTER *)AdapterHandle;
+    if (!adapter || !adapter->Started)
+        return STATUS_INVALID_DEVICE_STATE;
+    return NgGpuCreateDeviceObject(Args);
+}
+
 NTSTATUS
 NTAPI
 DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
@@ -428,5 +439,9 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     init.DxgkDdiRemoveDevice = NegroniGpuRemoveDevice;
     init.DxgkDdiQueryAdapterInfo = NegroniGpuQueryAdapterInfo;
     init.DxgkDdiEscape = NegroniGpuEscape;
+    init.DxgkDdiCreateDevice = NegroniGpuCreateDevice;
+    init.DxgkDdiDestroyDevice = NgGpuDestroyDeviceObject;
+    init.DxgkDdiCreateContext = NgGpuCreateContextObject;
+    init.DxgkDdiDestroyContext = NgGpuDestroyContextObject;
     return DxgkInitialize(DriverObject, RegistryPath, &init);
 }

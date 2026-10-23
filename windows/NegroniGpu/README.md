@@ -159,7 +159,7 @@ objects with 6.02 let the native transport tests pass. This observation is for
 the user-mode test executable; it does not establish a kernel-driver loader
 failure or lower the target from Windows 11 ARM64.
 
-Next: implement the real WDDM allocation/context/paging/submission/reset
+Next: implement the real WDDM allocation/hardware-context/paging/submission/reset
 contracts and an authenticated GPU/SMMU ownership path, then connect a Mesa
 backend to those operations. Do not use an Escape to accept unvalidated raw
 PM4 streams or physical addresses from user mode.
@@ -196,3 +196,30 @@ avoiding duplicate overlapping PnP descriptors. The full UEFI build and firmware
 - [Topaz WoA Adreno 610 implementation](https://github.com/MakrSas/topaz-woa)
 - [Qualcomm WoA driver pack](https://github.com/edk2-porting/WOA-Drivers)
 - [Qualcomm WoA driver request for Snapdragon 8 Gen 1](https://github.com/edk2-porting/WOA-Drivers/issues/101)
+
+### Software device and context ownership
+
+`NegroniGpuObjects.c` implements the CreateDevice/DestroyDevice and
+CreateContext/DestroyContext callbacks. A fast mutex protects child accounting;
+closing a device retains its storage until its last context is destroyed.
+Objects retain runtime handles but no adapter or MMIO pointer. Device creation
+requires StartDevice to have completed. Contexts accept node 0, engine mask 1,
+and ordinary/system physical-address contexts; GDI, GPUVA, protected and hardware
+queue contexts, PASID/process state and private context payloads are rejected.
+Failures leave caller output unchanged. There is no hard-coded object count cap.
+
+This is CPU-side ownership only. The context buffer sizes define a future staging
+contract; no hardware context, address space, command validation or execution is
+created. Rendering remains unadvertised and the driver remains non-installable.
+Before adding hardware resources, connect objects to adapter stop/remove and
+reset lifetime management; do not retain an unreferenced adapter pointer.
+
+`test-host.sh` runs the production object code using a mock allocator and pthread
+locks under ASan/UBSan. It covers allocation failures, flags/engine validation,
+unchanged rejection output, child-first and parent-first destruction, and 512
+children destroyed by eight threads. ARM64 cross-compilation separately checks
+the actual WDK structures and DDI callback signatures. These tests do not run
+Dxgkrnl or establish device readiness on Windows.
+
+Contracts: [CreateDevice](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmddi/nc-d3dkmddi-dxgkddi_createdevice),
+[CreateContext](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmddi/nc-d3dkmddi-dxgkddi_createcontext).

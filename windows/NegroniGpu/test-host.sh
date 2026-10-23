@@ -6,6 +6,11 @@ firmware_dir="${1:-/home/paw/ios-work/negroni-firmware/gpu}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+cc -std=c11 -Wall -Wextra -Werror -Wno-multichar -DNG_OBJECT_TEST \
+  -fsanitize=address,undefined -fno-omit-frame-pointer -pthread \
+  NegroniGpuObjects.c test-objects.c -o "$tmp/test-objects"
+"$tmp/test-objects"
+
 cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -fno-omit-frame-pointer NegroniGpuAbi.c test-abi.c -o "$tmp/test-abi"
 "$tmp/test-abi"
