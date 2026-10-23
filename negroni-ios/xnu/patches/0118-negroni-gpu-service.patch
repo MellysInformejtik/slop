@@ -336,10 +336,10 @@ index 3386688..1e145df 100644
  #endif /* ARM64_BOARD_CONFIG_NEGRONI */
 diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
 new file mode 100644
-index 0000000..9a6af9d
+index 0000000..c421013
 --- /dev/null
 +++ b/iokit/Kernel/arm/NegroniGPU.cpp
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,590 @@
 +/*
 + * RedwoodGPU on negroni: the Adreno 730 for programs to draw with.
 + *
@@ -357,6 +357,8 @@ index 0000000..9a6af9d
 + * Not here yet: IOSurface memory as buffers, showing pixels on the panel, interrupts (waiting
 + * is asking again every 200 us), recovery of a core that stops answering.
 + */
++
++#include <pexpert/arm64/board_config.h>
 +
 +#if defined(NEGRONI)
 +#include <IOKit/IOLib.h>
