@@ -122,6 +122,18 @@ jobs:
           { echo "mesa $MESA_VERSION $MESA_SHA256"; echo "patches $PATCHES_COMMIT";
             echo "sdk $(xcrun --sdk iphoneos --show-sdk-version), min iOS $IOS_MIN"; } > out/BUILT-FROM
           otool -l out/libOSMesa.8.dylib | grep -A4 LC_BUILD_VERSION | head -8
+
+      - name: gl_test
+        # one triangle through libOSMesa (freedreno on the RedwoodGPU service of patch 0118, softpipe without it),
+        # read back; prints the renderer and a few pixels (patches repo userland/src/gl_test.c)
+        run: |
+          cd "$RUNNER_TEMP"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios$IOS_MIN -isysroot "$SDK" -O1 \
+            -framework CoreFoundation -framework IOKit out/libOSMesa.8.dylib \
+            -o out/gl_test patches/userland/src/gl_test.c
+          codesign -f -s - out/gl_test out/libOSMesa.8.dylib
+          otool -L out/gl_test
           ls -l out; (cd out && shasum -a 256 * > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
