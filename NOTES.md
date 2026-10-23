@@ -780,3 +780,11 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   (address 3, descriptors); then panic after unlock, before gl_test: phystokv_range illegal PA 0xc7a24000 (low DRAM,
   not XNU-managed; caller ml_static_vtop.cold.1); not in the log (logs/boot-0119-panic.txt ends at bluetoothd).
   Bisecting: boot_a = boot_a-gpu-keep.img (0118, GPU kept, negroniusb=0) written in OrangeFox, verified.
+- **2026-10-23 Wi-Fi PCIe link (patch 0120, CI 39989394362):** negroni_wifi.c steps 5-9 (writes): GDSC + GCC votes
+  (0x62008 bits 0-5, 0x62000 bits 11/12/19/22, CLKREF 0x9c004, RCHNG 100 MHz), PERST 94 low / WLAN_EN 80 high,
+  qcom_pcie_init_2_7_0 + gen3x1 PHY tables (negroni_wifi_phy.h), root port bridge + iATU (CFG0 0x60100000 bus 1,
+  MEM 0x60300000-0x63ffffff), LTSSM, bus 1 ID (want 17cb:1103). Assumes the QCA6490 rails are on. Wi-Fi firmware
+  (amss.bin, m3.bin, regdb.bin, bdwlan.*) extracted from modem_a to ~/ios-work/negroni-firmware/modem/img/image.
+  Image unixnu/out/boot_a-wifi.img (sha 43c631d8…): default args, negroniwifi=9, no GPU keep, USB off. Untested.
+  Phone: battery 1%; slot A = boot_a-gpu-keep + our vendor_boot + vbmeta flags 3 (vbmeta had reverted to flags 0
+  once: re-check before blaming an image). Disabled vbmeta saved as shim/out/negroni-a/vbmeta_a-disabled.img.
