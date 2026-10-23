@@ -830,3 +830,8 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   verified b25a66ae…. Log ring moves to the new end automatically.
 - Andromeda: the Lumia 950 build 17686 is 32-bit ARM; SM8450 cores are AArch64-only -> needs an ARM64 build
   (Surface Duo era). Slot A boot chain is STOCK right now (OrangeFox); restore the iOS chain before booting iOS.
+- **2026-10-23 Windows GPU test prep:** NegroniGpu page tables (ea559ad); Mu fork bed75185: GpuSsdt (QCOM0A73,
+  7 MMIO windows, no IRQ) in the negroni ACPI set. Image ~/ios-work/winpe/boot_a-windows-gpu.img (sha 1c810296…),
+  without NegroniPcieDxe. Signed package windows/NegroniGpu/out/package (cat e1b53851…, sys fdf79a5f…). The KMD
+  only loads, maps its windows, validates firmware and reads the GPU power state; no render path. Recovery if
+  Windows boot-loops: mass storage, offline SYSTEM hive, Services\NegroniGpuWddm Start=4.

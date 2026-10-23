@@ -23,6 +23,8 @@ if (-not (Test-Path $bcd)) { throw "no BCD at $bcd" }
 Write-Host '== answer file (skips setup)'
 New-Item -ItemType Directory -Force "$Windows\Windows\Panther" | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'unattend-negroni.xml') "$Windows\Windows\Panther\unattend.xml" -Force
+# Windows also looks here on first boot (implicit answer file search order)
+Copy-Item (Join-Path $PSScriptRoot 'unattend-negroni.xml') "$Windows\Windows\System32\Sysprep\unattend.xml" -Force
 
 Write-Host '== BypassNRO'
 reg load HKLM\NEGRONI_SW "$Windows\Windows\System32\config\SOFTWARE" | Out-Null
