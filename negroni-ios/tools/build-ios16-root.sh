@@ -16,7 +16,6 @@ out=${1:-$H/ios-work/ios16-root-full.img}
 mnt=/mnt/iosroot
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
 [ -f "$ipsw" ] || { echo "missing $ipsw" >&2; exit 1; }
-[ ! -e "$out" ] || { echo "refusing to overwrite $out" >&2; exit 1; }
 export PATH=$H/ios-work/tools/apfs-fuse/build:$PATH
 
 # 1. the OS, SystemOS and AppOS images (BuildManifest: OS 087-86698-044, Cryptex1,SystemOS
@@ -26,8 +25,14 @@ for d in 087-86698-044.dmg 087-86593-047.dmg 087-86715-047.dmg; do
 	[ -s "$dmgs/$d" ] || unzip -o -q "$ipsw" "$d" -d "$dmgs"
 done
 
-# 2. the whole system and its cryptexes into a 16 GiB HFS+ image
-bash "$repo/tools/mkiosroot.sh" "$dmgs/087-86698-044.dmg" "$dmgs/087-86593-047.dmg" "$dmgs/087-86715-047.dmg" "$out" 16G
+# 2. the whole system and its cryptexes into a 16 GiB HFS+ image; an image left by an earlier run is reused
+#    (its last read-only fsck may report a harmless "volume header needs minor repair")
+if [ ! -e "$out" ]; then
+	bash "$repo/tools/mkiosroot.sh" "$dmgs/087-86698-044.dmg" "$dmgs/087-86593-047.dmg" "$dmgs/087-86715-047.dmg" "$out" 16G || true
+else
+	echo "reusing $out"
+fi
+[ -f "$out" ] || { echo "no $out" >&2; exit 1; }
 
 # 3. data-volume directories, the system keybag, and the boot changes (setup skipped, activation,
 #    CommCenter jobs, migration marker, MediaToolbox, SpringBoard watchdogs)
