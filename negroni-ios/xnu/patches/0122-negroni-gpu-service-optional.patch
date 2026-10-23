@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/negroni_adreno.c b/bsd/dev/negroni_adreno.c
+index 053d76b..990b4dd 100644
+--- a/bsd/dev/negroni_adreno.c
++++ b/bsd/dev/negroni_adreno.c
+@@ -2369,7 +2369,14 @@ gpu_keep(void)
+ 	if (watch && kernel_thread_start(gpu_watch, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+-	NegroniGPUStart();
++	uint32_t service = 1;
++
++	(void)PE_parse_boot_argn("negroniadreno_service", &service, sizeof(service));
++	if (service) {
++		NegroniGPUStart();
++	} else {
++		printf("NEGRONI GPU: no RedwoodGPU service (negroniadreno_service=0)\n");
++	}
+ }
+ 
+ void
