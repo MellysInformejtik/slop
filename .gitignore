@@ -12,3 +12,4 @@ __pycache__/
 unixnu-negroni/.cache/
 unixnu-negroni/unixnu.lock
 /unixnu/
+windows/wlan/out/
