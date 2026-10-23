@@ -25,7 +25,7 @@ env:
   MESA_VERSION: 25.0.7
   MESA_SHA256: 592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
   PATCHES_REPO: https://github.com/oosexgang/hackios-xnu-userland.git
-  PATCHES_COMMIT: 906425b75e02b4f99eb5d7bb1ef7c9583472d772
+  PATCHES_COMMIT: b4c5513e2df93689895d21fd3b93b723a7bcfdd3
   IOS_MIN: "16.0"
 
 jobs:
