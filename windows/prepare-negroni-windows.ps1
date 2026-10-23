@@ -10,11 +10,15 @@
 param(
     [Parameter(Mandatory)][string]$Windows,
     [Parameter(Mandatory)][string]$Efi,
-    [string]$Driver = (Join-Path $PSScriptRoot 'NegroniTouch\out\v4-catalog'),
-    [string]$KeysDriver = (Join-Path $PSScriptRoot 'NegroniKeys\out\pkg'),
+    [string]$Driver = '',
+    [string]$KeysDriver = '',
     [int]$Cpus = 8      # 8: all cores; 4: only the four small cores (older builds blue-screen with 0x3E on all 8)
 )
 $ErrorActionPreference = 'Stop'
+# (Windows PowerShell 5.1 has no $PSScriptRoot while parameter defaults are evaluated)
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $Driver) { $Driver = Join-Path $here 'NegroniTouch\out\v4-catalog' }
+if (-not $KeysDriver) { $KeysDriver = Join-Path $here 'NegroniKeys\out\pkg' }
 $Windows = $Windows.TrimEnd('\'); $Efi = $Efi.TrimEnd('\')
 if (-not (Test-Path "$Windows\Windows\System32\config\SOFTWARE")) { throw "$Windows is not a Windows partition" }
 $bcd = "$Efi\EFI\Microsoft\Boot\BCD"
@@ -22,9 +26,9 @@ if (-not (Test-Path $bcd)) { throw "no BCD at $bcd" }
 
 Write-Host '== answer file (skips setup)'
 New-Item -ItemType Directory -Force "$Windows\Windows\Panther" | Out-Null
-Copy-Item (Join-Path $PSScriptRoot 'unattend-negroni.xml') "$Windows\Windows\Panther\unattend.xml" -Force
+Copy-Item (Join-Path $here 'unattend-negroni.xml') "$Windows\Windows\Panther\unattend.xml" -Force
 # Windows also looks here on first boot (implicit answer file search order)
-Copy-Item (Join-Path $PSScriptRoot 'unattend-negroni.xml') "$Windows\Windows\System32\Sysprep\unattend.xml" -Force
+Copy-Item (Join-Path $here 'unattend-negroni.xml') "$Windows\Windows\System32\Sysprep\unattend.xml" -Force
 
 Write-Host '== BypassNRO'
 reg load HKLM\NEGRONI_SW "$Windows\Windows\System32\config\SOFTWARE" | Out-Null
