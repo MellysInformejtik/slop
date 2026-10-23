@@ -1,0 +1,58 @@
+diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
+index c421013..a472f61 100644
+--- a/iokit/Kernel/arm/NegroniGPU.cpp
++++ b/iokit/Kernel/arm/NegroniGPU.cpp
+@@ -29,6 +29,7 @@
+ #include <kern/clock.h>
+ #include <mach/mach_time.h>
+ #include <sys/systm.h>
++#include <sys/proc.h>
+ 
+ extern "C" {
+ bool negroni_gpu_ready(void);
+@@ -236,6 +237,8 @@ class RedwoodGPUUserClient : public IOUserClient
+ 	uint32_t                fNextQueue;
+ 	uint32_t                fNextBuffer;
+ 	uint32_t                fSubmits;
++	uint32_t                fCalls;                 /* requests logged so far (negroni_gpu_trace) */
++	char                    fName[24];
+ 
+ 	struct gpu_buffer * buffer(uint32_t handle);
+ 	void freeBuffer(struct gpu_buffer * b);
+@@ -257,6 +260,8 @@ OSDefineMetaClassAndStructors(RedwoodGPUUserClient, IOUserClient);
+ bool
+ RedwoodGPUUserClient::start(IOService * provider)
+ {
++	proc_selfname(fName, sizeof(fName));
++	IOLog("RedwoodGPU: opened by %s (pid %d)\n", fName, proc_selfpid());
+ 	if (!negroni_gpu_ready() || !IOUserClient::start(provider)) {
+ 		return false;
+ 	}
+@@ -285,6 +290,7 @@ RedwoodGPUUserClient::freeBuffer(struct gpu_buffer * b)
+ IOReturn
+ RedwoodGPUUserClient::clientClose(void)
+ {
++	IOLog("RedwoodGPU: %s closes\n", fName);
+ 	if (fBuffers != NULL) {
+ 		IOLockLock(gGPULock);
+ 		gpuWait(negroni_gpu_last(), 1000);
+@@ -478,6 +484,7 @@ RedwoodGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, I
+ 	struct gpu_buffer * b;
+ 	IOReturn ret = kIOReturnBadArgument;
+ 
++	IOLog("RedwoodGPU: %s maps buffer %u\n", fName, (unsigned) type);
+ 	IOLockLock(gGPULock);
+ 	b = buffer(type);
+ 	if (b != NULL) {
+@@ -511,6 +518,11 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
+ 	IOReturn ret = kIOReturnSuccess;
+ 	uint64_t zero = 0, patience;
+ 
++	if (fCalls < 64) {
++		fCalls++;
++		IOLog("RedwoodGPU: %s request %#x, %zu bytes in, %u out, scalars %u\n", fName, selector, size,
++		    args->structureOutputSize, args->scalarInputCount);
++	}
+ 	if (args->structureInput == NULL || size > sizeof(r) || fBuffers == NULL) {
+ 		return kIOReturnBadArgument;
+ 	}
