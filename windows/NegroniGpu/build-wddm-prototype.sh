@@ -13,7 +13,7 @@ clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
 clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
   -Wno-unknown-pragmas -Wno-ignored-attributes -Wno-ignored-pragma-intrinsic \
   -D_ARM64_ -DARM64 -D_WIN64 -D_KERNEL_MODE -DNTDDI_VERSION=0x0A000010 \
-  -D_WIN32_WINNT=0x0A00 -DDXGKDDI_INTERFACE_VERSION=0xC004 \
+  -D_WIN32_WINNT=0x0A00 -DDXGKDDI_INTERFACE_VERSION=0x4002 \
   /I "$I/km/crt" /I "$I/km" /I "$I/shared" \
   /Foout/NegroniGpuWddm.obj NegroniGpuWddm.c 2>out/wddm-compile.log
 clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
@@ -39,14 +39,14 @@ clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
 clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
   -Wno-unknown-pragmas -Wno-ignored-attributes -Wno-ignored-pragma-intrinsic \
   -D_ARM64_ -DARM64 -D_WIN64 -D_KERNEL_MODE -DNTDDI_VERSION=0x0A000010 \
-  -D_WIN32_WINNT=0x0A00 -DDXGKDDI_INTERFACE_VERSION=0xC004 \
+  -D_WIN32_WINNT=0x0A00 -DDXGKDDI_INTERFACE_VERSION=0x4002 \
   /I "$I/km/crt" /I "$I/km" /I "$I/shared" \
   /Foout/NegroniGpuObjects.obj NegroniGpuObjects.c 2>>out/wddm-compile.log
 for source in NegroniGpuMemory NegroniGpuAllocation NegroniGpuPageTable; do
   clang-cl --target=aarch64-pc-windows-msvc /kernel /GS- /Zl /O2 /W3 /c \
     -Wno-unknown-pragmas -Wno-ignored-attributes -Wno-ignored-pragma-intrinsic \
     -D_ARM64_ -DARM64 -D_WIN64 -D_KERNEL_MODE -DNTDDI_VERSION=0x0A000010 \
-    -D_WIN32_WINNT=0x0A00 -DDXGKDDI_INTERFACE_VERSION=0xC004 \
+    -D_WIN32_WINNT=0x0A00 -DDXGKDDI_INTERFACE_VERSION=0x4002 \
     /I "$I/km/crt" /I "$I/km" /I "$I/shared" \
     /Foout/$source.obj "$source.c" 2>>out/wddm-compile.log
 done

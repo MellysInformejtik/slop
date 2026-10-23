@@ -30,8 +30,12 @@ NTSTATUS NgGpuCreateDeviceObject(INOUT_PDXGKARG_CREATEDEVICE Args)
     if (!Args || !Args->hDevice)
         return STATUS_INVALID_PARAMETER;
     /* System devices are supported; GDI, reserved flags and GPUVA are not. */
-    if ((Args->Flags.Value & ~1u) || Args->Pasid || Args->hKmdProcess)
+    if (Args->Flags.Value & ~1u)
         return STATUS_NOT_SUPPORTED;
+#if defined(NG_OBJECT_TEST) || DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_0
+    if (Args->Pasid || Args->hKmdProcess)       /* WDDM 2.x only */
+        return STATUS_NOT_SUPPORTED;
+#endif
     device = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(*device), NG_OBJECT_TAG);
     if (!device)
         return STATUS_NO_MEMORY;

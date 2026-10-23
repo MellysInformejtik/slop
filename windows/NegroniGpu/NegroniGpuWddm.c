@@ -451,20 +451,22 @@ APIENTRY
 NegroniGpuQueryAdapterInfo(IN_CONST_HANDLE AdapterHandle,
                            IN_CONST_PDXGKARG_QUERYADAPTERINFO Query)
 {
-    DXGK_WDDMDEVICECAPS *caps;
+    DXGK_DRIVERCAPS *caps;
 
-    // This pre-start query reports only the DDI level this prototype was
-    // compiled for. It intentionally does not advertise DRIVERCAPS/rendering.
+    // WDDM 1.3 (as Microsoft's render-only sample): Dxgkrnl learns the driver model from
+    // DRIVERCAPS. Only the version is reported; no rendering, scheduling or display features.
     if (AdapterHandle == NULL || Query == NULL)
         return STATUS_INVALID_PARAMETER;
-    if (Query->Type != DXGKQAITYPE_WDDMDEVICECAPS)
+    if (Query->Type != DXGKQAITYPE_DRIVERCAPS)
         return STATUS_NOT_SUPPORTED;
     if (Query->pOutputData == NULL ||
-        Query->OutputDataSize < sizeof(DXGK_WDDMDEVICECAPS))
+        Query->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
         return STATUS_BUFFER_TOO_SMALL;
 
-    caps = (DXGK_WDDMDEVICECAPS *)Query->pOutputData;
+    caps = (DXGK_DRIVERCAPS *)Query->pOutputData;
+    RtlZeroMemory(caps, sizeof(*caps));
     caps->WDDMVersion = DXGKDDI_WDDMv1_3;
+    NgTraceValue(L"QueriedDriverCaps", 1);
     return STATUS_SUCCESS;
 }
 
@@ -504,7 +506,7 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     DRIVER_INITIALIZATION_DATA init;
     RtlZeroMemory(&init, sizeof(init));
-    init.Version = DXGKDDI_INTERFACE_VERSION_WDDM2_7;
+    init.Version = DXGKDDI_INTERFACE_VERSION_WDDM1_3;
     init.DxgkDdiAddDevice = NegroniGpuAddDevice;
     init.DxgkDdiStartDevice = NegroniGpuStartDevice;
     init.DxgkDdiStopDevice = NegroniGpuStopDevice;
