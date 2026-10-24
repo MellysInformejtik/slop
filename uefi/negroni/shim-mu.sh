@@ -6,7 +6,10 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 mu=${MU:-$HOME/ios-work/Mu-Silicium}
 F=/mnt/c/Users/paw/scoop/shims/fastboot.exe
 # shared touch headers (drivers/negroni-touch) into NegroniTouchDxe
-mkdir -p "$mu/Platforms/OnePlus/negroniPkg/Drivers/NegroniTouchDxe" && cp "$repo"/drivers/negroni-touch/*.h "$mu/Platforms/OnePlus/negroniPkg/Drivers/NegroniTouchDxe/"
+if [ "${SYNC_TOUCH_HEADERS:-1}" = 1 ]; then
+  mkdir -p "$mu/Platforms/OnePlus/negroniPkg/Drivers/NegroniTouchDxe"
+  cp "$repo"/drivers/negroni-touch/*.h "$mu/Platforms/OnePlus/negroniPkg/Drivers/NegroniTouchDxe/"
+fi
 (cd "$mu" && source ~/ios-work/mu-venv/bin/activate && python3 build_uefi.py -d negroni -r DEBUG > "$mu/../negroni-uefi/build-debug.log" 2>&1) \
 	|| { tail -30 "$mu/../negroni-uefi/build-debug.log"; exit 1; }
 fd=$mu/Build/negroniPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd

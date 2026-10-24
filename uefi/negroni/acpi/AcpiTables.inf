@@ -8,6 +8,7 @@
 [Binaries]
   ASL|SSDT.aml
   ASL|TouchSsdt.aml
+  ASL|UsbSsdt.aml
   ASL|GpuSsdt.aml
   ASL|Common/SSDT.aml
   ASL|Waipio/APIC.aml
