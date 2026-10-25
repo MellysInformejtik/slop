@@ -113,6 +113,9 @@ jobs:
           s = s.replace(old, 'if(!base){NBLOG(@"native-metal: no _MTLDevice");return nil;}\n NBLOG(@"native-metal: _MTLDevice instance size %zu (iPadOS 17.7.11: 536)",class_getInstanceSize(base));')
           p.write_text(s); print('iOS 18: _MTLDevice size check relaxed')
           PY
+          # iOS 18 sends the plugin's objects methods the iPadOS 17 frontend lacks; it threw (backboardd crash-looped, sig 6 from
+          # objc_exception_throw <- doesNotRecognizeSelector). They are now answered with nil/0 and named in the kernel log (MISS ...).
+          python3 "$GITHUB_WORKSPACE/negroni-ios/gpu/ios18/answer-missing-selectors.py"
 
       - name: NativeMetal plugin
         if: inputs.stage == 'plugin'
