@@ -66,11 +66,14 @@ def launchd(root):
         if '_PanicOnCrash' in job:
             job['_PanicOnCrasX'] = job.pop('_PanicOnCrash')
             renamed += 1
-    removed = [k for k, j in jobs.items() if j.get('Label') == 'com.apple.CommCenter']
+    # iOS 18: cryptexd traps in libimage4 (img4_firmware_new_from_fd: no Image4 environment) and crash-loops;
+    # the root is merged, there is no cryptex to verify (Bergamota root_tweaks18 QUIET_REMOVE)
+    drop = ('com.apple.CommCenter',) + (('com.apple.security.cryptexd',) if BUILD.startswith('22') else ())
+    removed = [k for k, j in jobs.items() if j.get('Label') in drop]
     for k in removed:
         del jobs[k]
     save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
-    print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} CommCenter jobs removed')
+    print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} jobs removed {drop}')
 
 
 def containers(root):
