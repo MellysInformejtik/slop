@@ -1,0 +1,94 @@
+diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
+index 5653502..07d8706 100644
+--- a/iokit/Kernel/arm/NegroniGPU.cpp
++++ b/iokit/Kernel/arm/NegroniGPU.cpp
+@@ -27,6 +27,8 @@
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ #include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
+ #include <mach/mach_time.h>
+ #include <sys/systm.h>
+ #include <sys/proc.h>
+@@ -62,6 +64,13 @@ enum {
+ 	kMsmSubmitQueueNew      = 0x4a,
+ 	kMsmSubmitQueueClose    = 0x4b,
+ 	kMsmSubmitQueueQuery    = 0x4c,
++	kRedwoodShow            = 0x7f,         /* not msm: pixels for the panel (gl_test) */
++};
++
++/* kRedwoodShow: BGRA rows in the caller's memory, copied onto the boot framebuffer */
++struct redwood_show {
++	uint64_t pixels;
++	uint32_t width, height, row_bytes, pad;
+ };
+ 
+ struct msm_timespec {
+@@ -238,6 +247,7 @@ class RedwoodGPUUserClient : public IOUserClient
+ 	void freeBuffer(struct gpu_buffer * b);
+ 	IOReturn gemNew(struct msm_gem_new * request);
+ 	IOReturn gemInfo(struct msm_gem_info * request);
++	IOReturn show(const struct redwood_show * request);
+ 	IOReturn submit(struct msm_gem_submit * request);
+ 
+ public:
+@@ -377,6 +387,40 @@ RedwoodGPUUserClient::gemNew(struct msm_gem_new * request)
+ 	return kIOReturnSuccess;
+ }
+ 
++/*
++ * kRedwoodShow: the caller's picture onto the panel, row by row, clipped to the panel. The boot
++ * framebuffer is mapped write-combined once; whatever backboardd presents next draws over it.
++ */
++IOReturn
++RedwoodGPUUserClient::show(const struct redwood_show * request)
++{
++	static vm_offset_t panel;
++	PE_Video video;
++
++	PE_current_console(&video);
++	if (video.v_baseAddr == 0 || video.v_rowBytes < video.v_width * 4) {
++		return kIOReturnNotReady;
++	}
++	if (request->pixels == 0 || request->row_bytes < (uint64_t) request->width * 4) {
++		return kIOReturnBadArgument;
++	}
++	if (panel == 0) {
++		panel = ml_io_map_wcomb(video.v_baseAddr, (vm_size_t) video.v_rowBytes * video.v_height);
++		if (panel == 0) {
++			return kIOReturnNoMemory;
++		}
++	}
++	uint32_t rows = MIN(request->height, (uint32_t) video.v_height);
++	vm_size_t bytes = (vm_size_t) MIN(request->width, (uint32_t) video.v_width) * 4;
++	for (uint32_t y = 0; y < rows; y++) {
++		if (copyin((user_addr_t) (request->pixels + (uint64_t) y * request->row_bytes),
++		    (void *) (panel + (vm_offset_t) y * video.v_rowBytes), bytes) != 0) {
++			return kIOReturnBadArgument;
++		}
++	}
++	return kIOReturnSuccess;
++}
++
+ IOReturn
+ RedwoodGPUUserClient::gemInfo(struct msm_gem_info * request)
+ {
+@@ -506,6 +550,7 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
+ 		struct msm_submitqueue queue;
+ 		struct msm_submitqueue_query query;
+ 		struct drm_gem_close close;
++		struct redwood_show show;
+ 	} r;
+ 	size_t size = args->structureInputSize;
+ 	struct gpu_buffer * b;
+@@ -580,6 +625,9 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
+ 		}
+ 		IOLockUnlock(gGPULock);
+ 		break;
++	case kRedwoodShow:
++		ret = show(&r.show);
++		break;
+ 	default:
+ 		IOLog("RedwoodGPU: request %#x (%zu bytes) is not known here\n", selector, size);
+ 		ret = kIOReturnUnsupported;
