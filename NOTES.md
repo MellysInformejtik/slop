@@ -9,7 +9,9 @@
 - boot_a held a different (OrangeFox?) image; backed up to `~/ios-work/boot_a-before-ios18-restore-10250459.img` and rewritten with `unixnu/out/boot_a-ios18.img` (21ebe831). vendor_boot_a (77424da2), vbmeta_a flags 3 (efc6c16a) and dtbo_a zeroed, all verified.
 - Then, at the user's request: GPT primary + backup rewritten to the andromeda-split entries (vbmeta_system/vbmeta_vendor type GUIDs swapped back), read back OK; pre-revert copies in `~/ios-work/negroni-gpt/sda-*-before-revert-1025.bin`. The in-place patch was superseded by a full userdata rewrite with the fixed image.
 - Streaming the raw image with `adb exec-in "dd of=/dev/block/sda14"` from OrangeFox CORRUPTED it (sizes matched and adb exited 0, but 21 of 22 GiB hashed differently; the phone's data was shifted by 128 bytes against the image). Don't use it. Reflashed with `fastboot -S 256M flash userdata ~/ios-work/ios18-root-full.simg` (regenerated 05:35, 17988865756 bytes): 69/69 chunks OKAY, 1006 s. Then `fastboot reboot`.
-- Next: check that the iOS 18 log has no cryptexd exec/CRASH lines.
+- Boot result (log pulled from OrangeFox): no cryptexd lines at all. SpringBoard and backboardd start, nothing crashes (wifip2pd/fileproviderd exit 1 in a loop, harmless). backboardd polls `IOAcceleratorES` 300 times (30 s), turns the display on (NEGRONI FB display on), opens IOCoreSurfaceRoot, gets limits sel 13 (0x28, v1), and then never creates a surface and never swaps. Of Bergamota's 23 ported patches only 0122 (empty IOAcceleratorES) was missing from 0126.
+- 0127-ios18-empty-ioacceleratores.patch (patches-ios18; boot-arg negroniaccel=0 turns it off). Pushed (user approved), CI 40198512915 success, kernel has the "empty IOAcceleratorES published" string. Boot image `unixnu/out/boot_a-ios18-0127.img` (561a38e8, same Mu/args as boot_a-ios18). Written from OrangeFox with vendor_boot/vbmeta/dtbo (verified); userdata untouched. Rebooted.
+- Next: pull the log; expect "empty IOAcceleratorES published", no 300x poll, then IOSurface create + swap lines.
 
 ## 2026-10-22 Negroni Windows Adreno 730 research
 
