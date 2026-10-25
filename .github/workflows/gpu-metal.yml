@@ -27,7 +27,7 @@ jobs:
 
       - name: Tools
         run: |
-          brew install meson ninja llvm bison flex glslang
+          brew install meson ninja llvm bison flex glslang shaderc
           # build-native-metal-bridge.py runs `cargo +1.98.0`
           rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios
           xcrun --sdk iphoneos --show-sdk-path
@@ -72,6 +72,12 @@ jobs:
         run: |
           cd "$U"
           python3 scripts/build-native-metal-bridge.py --target ios
+
+      - name: Turnip (host, for the plugin's recorded smoke submission)
+        if: inputs.stage == 'plugin'
+        run: |
+          cd "$U"
+          python3 scripts/build-turnip-darwin.py --target host || { tail -60 .cache/mesa-tu-host-*.log; exit 1; }
 
       - name: NativeMetal plugin
         if: inputs.stage == 'plugin'
