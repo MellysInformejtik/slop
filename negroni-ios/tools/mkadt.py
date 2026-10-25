@@ -158,6 +158,12 @@ def build(seed=None, qemu=False, highmem=False, board='negroni', dram=None, ufs=
         ('effective-production-status-ap', u32(0)),
         ('certificate-security-mode', u32(1)),
         ('effective-security-mode-sep', u32(1)),
+        # MobileGestalt's Wi-Fi / Bluetooth address (lsd asks for it per bundle while it seeds the
+        # LaunchServices database). Without these it waits for an IONetworkController match until a
+        # timeout, and backboardd/SpringBoard block in LaunchServices behind lsd (Bergamota's
+        # mkadt chosen_extra). Synthetic, locally administered addresses.
+        ('mac-address-wifi0', bytes([0x02, 0x00, 0x5e, 0x6e, 0xe0, 0x01])),
+        ('mac-address-bluetooth0', bytes([0x02, 0x00, 0x5e, 0x6e, 0xb0, 0x01])),
     ], [node('memory-map', [ph()]),
         # Local boot policy (kern_csr.c): SIP relaxed like `csrutil disable`
         # (lp-sip0: untrusted kexts, unrestricted FS, task_for_pid, kernel
