@@ -1,0 +1,19 @@
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index 00568d3..0ec07ea 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -6881,7 +6881,13 @@ void
+ pmap_sync_page_attributes_phys(
+ 	ppnum_t pp)
+ {
+-	flush_dcache((vm_offset_t) (pp << PAGE_SHIFT), PAGE_SIZE, TRUE);
++	/*
++	 * NEGRONI: widen before the shift. ppnum_t is 32 bits, so (pp << PAGE_SHIFT) dropped the
++	 * top of every address above 4 GiB (negroni RAM starts at 0x841004000): changing the cache
++	 * mode of a write-combined buffer (Mesa, vm_object_change_wimg_mode) flushed 0x9d520000
++	 * for 0x89d520000 and panicked in phystokv_range.
++	 */
++	flush_dcache((vm_offset_t) (((pmap_paddr_t)pp) << PAGE_SHIFT), PAGE_SIZE, TRUE);
+ }
+ 
+ #if CONFIG_COREDUMP
