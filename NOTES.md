@@ -1,5 +1,14 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## 2026-10-25 iOS 18 first boot: cryptexd crash loop, fixed in place
+
+- Observed (SWEETLOG from OrangeFox): iOS 18.7.8 boots and runs up to bluetoothd; `cryptexd` crash-loops with sig 5 (trap in libimage4, pc 0x27506ce70) on every relaunch. Bergamota removes the job (root_tweaks18 QUIET_REMOVE).
+- `tools/sweet-root-tweaks.py` now drops `com.apple.security.cryptexd` for 22xxx builds (637b6b5). The local image `~/ios-work/ios18-root-full.img` was edited too (job removed), but its .simg was NOT regenerated.
+- The phone's HFS+ had changed a lot since the flash (about 2k files and 80k blocks; writeCount 0x164e9), so the image's block diff was NOT written. Instead launchd.plist was patched on the phone: in the LaunchDaemons dict, the 2-byte value ref of `/System/Library/LaunchDaemons/com.apple.security.cryptexd.plist` now points at an existing empty dict (obj 1899; it was 19000). Same file size, no metadata change. sda14 4K block 2807886, file offset 309099; written and read back OK. Original block: `~/ios-work/launchd-blk2807886-orig.bin` (dd it back with seek=2807886 to revert).
+- GPT checked against `negroni-gpt/sda-gpt-andromeda-split.bin`: userdata/esp/win entries identical; only the vbmeta_system/vbmeta_vendor A/B type GUIDs are swapped (slot bookkeeping) plus the CRCs. Not restored.
+- boot_a held a different (OrangeFox?) image; backed up to `~/ios-work/boot_a-before-ios18-restore-10250459.img` and rewritten with `unixnu/out/boot_a-ios18.img` (21ebe831). vendor_boot_a (77424da2), vbmeta_a flags 3 (efc6c16a) and dtbo_a zeroed, all verified.
+- Next: boot iOS 18 and check that the log has no cryptexd exec/CRASH lines; the empty-dict job should be skipped by launchd (unverified).
+
 ## 2026-10-22 Negroni Windows Adreno 730 research
 
 - User clarified the target is a Windows ARM64 GPU driver for the new Windows install, not the earlier iOS Metal backport. Added `windows/NegroniGpu/README.md` with requirements, safe milestones, and references. No Windows driver code was built, no GPU driver was installed, and the phone/Windows image was not modified for this work.
