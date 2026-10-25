@@ -23,7 +23,7 @@ title = "negroni-ios"
 
 [[entry]]
 id = "ios16"
-title = "iOS 16 (negroni-ios XNU)"
+title = "iOS 18 (negroni-ios XNU)"
 type = "xnu"
 # UEFI FAT paths: backslashes (DarwinBoot passes the path through unchanged)
 path = '\Payloads\kernel.macho'
