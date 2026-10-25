@@ -863,3 +863,8 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   NEGRONI_IOS_BUILD=22H352 (+ D22 event timing, LaunchServices reset) + staged apps + Sileo -> ios18-root-full.simg.
   No pacstrip: SM8450 has PAuth and the kernel leaves the keys off (PAC = pass-through), so Apple's signatures stay
   valid. Unverified; fallback = Bergamota tools/ios18/pacstrip*.py. Boot args: + negroniarm64e=1, no GPU.
+- **2026-10-25 iOS 18 ready to flash:** kernel CI 40185294317 (0122 supply votes + 0125 rebased + 0126 ios18, all
+  applied). Root ~/ios-work/ios18-root-full.simg (18 GB used, 229 apps, Sileo); warning: no mobileactivationd
+  container -> activation data ark skipped. WSL kernel lacks hfsplus: `sudo insmod ~/ios-work/tools/wsl-kernel/fs/
+  hfsplus/hfsplus.ko` after every WSL restart. Boot image unixnu/out/boot_a-ios18.img (21ebe831…): negroniarm64e=1
+  ufslogsecs=1, no GPU, Mu WITHOUT NegroniWindowsFirstDxe/PcieDxe (Windows on win/esp would otherwise boot first).
