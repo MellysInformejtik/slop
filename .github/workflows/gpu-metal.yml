@@ -1,0 +1,96 @@
+name: gpu-metal
+
+# Metal for the negroni iOS 18 userland: UniXNU's NativeMetal plugin (Metal device over AIR -> SPIR-V
+# with metal2vulkan) and Turnip with its Darwin KMD (the NativeAdreno user-client ABI, served on negroni
+# by AGXDeviceUserClient, negroni-ios/xnu/patches-ios18/0129). Built with UniXNU's own scripts at their
+# pinned sources: Mesa 85fda3b3 + patches/mesa, steelbrain/metal2vulkan 720ef1ce + bridge patches.
+# Output: NativeAdrenoMetal.bundle, libvulkan_freedreno.dylib, libnative_metal_bridge.a, logs.
+# All inputs are MIT/BSD sources; nothing from Apple is in the artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: how far to build (turnip, bridge, plugin)
+        default: plugin
+
+env:
+  UNIXNU_REPO: https://github.com/UniXNU/UniXNU.git
+  UNIXNU_COMMIT: fb2bb310564ce66779e472a021881cf7c5764919
+
+jobs:
+  metal:
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          brew install meson ninja llvm bison flex glslang
+          rustup target add aarch64-apple-ios
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+          rustc --version
+
+      - name: UniXNU (pinned, NativeMetal + NativeAdreno)
+        run: |
+          U="$RUNNER_TEMP/UniXNU"
+          git clone -q "$UNIXNU_REPO" "$U"
+          git -C "$U" checkout -q "$UNIXNU_COMMIT"
+          git -C "$U" submodule update --init --depth 50 drivers/NativeMetal drivers/NativeAdreno
+          git -C "$U" submodule status drivers/NativeMetal drivers/NativeAdreno
+          echo "U=$U" >> "$GITHUB_ENV"
+
+      - name: Pinned inputs (.cache)
+        run: |
+          cd "$U"
+          mkdir -p .cache/gpu-reference .cache/mesa-tools/bin
+          python3 -m venv .cache/mesa-venv
+          .cache/mesa-venv/bin/pip -q install meson mako pyyaml packaging
+          for t in bison flex; do ln -sf "$(brew --prefix $t)/bin/$t" .cache/mesa-tools/bin/$t; done
+          M=$(python3 -c "import json;print(json.load(open('scripts/data/adreno-compiler-inputs.json'))['mesa']['commit'])")
+          git init -q .cache/mesa-work
+          git -C .cache/mesa-work fetch -q --depth 1 https://gitlab.freedesktop.org/mesa/mesa.git "$M"
+          git -C .cache/mesa-work checkout -q FETCH_HEAD
+          for p in $(python3 -c "import json;print(' '.join(json.load(open('scripts/data/adreno-compiler-inputs.json'))['patches']))"); do
+            echo "mesa patch $p"; git -C .cache/mesa-work apply "$U/$p"
+          done
+          T=$(python3 -c "import json;print(json.load(open('scripts/data/gpu-metal-vulkan-inputs.json'))['translator']['commit'])")
+          git init -q .cache/gpu-reference/metal2vulkan
+          git -C .cache/gpu-reference/metal2vulkan fetch -q --depth 1 https://github.com/steelbrain/metal2vulkan.git "$T"
+          git -C .cache/gpu-reference/metal2vulkan checkout -q FETCH_HEAD
+
+      - name: Turnip (Darwin KMD, iOS)
+        run: |
+          cd "$U"
+          python3 scripts/build-turnip-darwin.py --target ios || { tail -60 .cache/mesa-tu-ios-*.log; exit 1; }
+
+      - name: metal2vulkan bridge (iOS)
+        if: inputs.stage != 'turnip'
+        run: |
+          cd "$U"
+          python3 scripts/build-native-metal-bridge.py --target ios
+
+      - name: NativeMetal plugin
+        if: inputs.stage == 'plugin'
+        run: |
+          cd "$U"
+          python3 scripts/build-adreno-metal-plugin.py
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out/logs
+          cp "$U"/.cache/*.log out/logs/ 2>/dev/null || true
+          cp "$U/build/mesa-tu-ios/src/freedreno/vulkan/libvulkan_freedreno.dylib" out/ 2>/dev/null || true
+          cp "$U/build/mesa-tu-ios/builtin-build-profile.json" out/ 2>/dev/null || true
+          cp "$U"/build/native-metal-bridge/ios/*.a out/ 2>/dev/null || true
+          cp -R "$U/build/adreno-metal-plugin" out/ 2>/dev/null || true
+          ls -laR out | head -60
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: negroni-gpu-metal
+          path: out
