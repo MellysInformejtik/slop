@@ -327,7 +327,7 @@ index c8f7887..00f0a28 100644
  	if (accel != NULL && accel->init()) {
  		accel->setName("sgx");
 diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
-index 4e6c9c1..2b0e815 100644
+index 4e6c9c1..5ef5b08 100644
 --- a/iokit/Kernel/arm/NegroniGPU.cpp
 +++ b/iokit/Kernel/arm/NegroniGPU.cpp
 @@ -26,6 +26,8 @@
@@ -356,7 +356,7 @@ index 4e6c9c1..2b0e815 100644
  	return true;
  }
  
-@@ -645,4 +650,713 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
+@@ -645,4 +650,717 @@ RedwoodGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArgument
  	}
  	return ret;
  }
@@ -968,6 +968,10 @@ index 4e6c9c1..2b0e815 100644
 +		out.status.faults = gGPUStopped ? 1 : 0;
 +		break;
 +	case NativeAdrenoMethodSetMetadata:
++		/* the plugin's test reports through a bogus handle: the text is logged before the handle is checked (as NativeAdreno does) */
++		if (in.metadata.bytes <= NativeAdrenoAbiMetadataBytes) {
++			IOLog("RedwoodGPU: Metal %s metadata %llu: %.*s\n", fName, in.metadata.handle, (int) in.metadata.bytes, in.metadata.text);
++		}
 +		o = object(in.metadata.handle);
 +		if (o == NULL || in.metadata.bytes > NativeAdrenoAbiMetadataBytes || in.metadata.reserved) {
 +			ret = kIOReturnBadArgument;

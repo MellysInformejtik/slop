@@ -6,8 +6,13 @@
 # negronimetal=1. No publish marker: the plugin runs its own GPU test in the process that loads it and the
 # render server keeps drawing on the CPU (stage 1). Then img2simg and flash userdata.
 #
-#   sudo negroni-ios/tools/install-metal-plugin.sh DIR [~/ios-work/ios18-root-full.img]   (DIR: the unpacked artifact)
+#   sudo negroni-ios/tools/install-metal-plugin.sh [--publish] DIR [~/ios-work/ios18-root-full.img]   (DIR: the unpacked artifact)
+# --publish: also the marker /System/Library/Extensions/NativeAdrenoMetal.publish (beside the bundle): backboardd then returns the
+# plugin's Metal device and the render server composites the UI on the Adreno. Without it, stage 1. Back to CPU drawing without a
+# reflash: boot with negronimetal=2 (the accelerator without the plugin's name).
 set -euo pipefail
+publish=0
+[ "${1:-}" = --publish ] && { publish=1; shift; }
 U=${SUDO_USER:-$USER}
 H=$(getent passwd "$U" | cut -d: -f6)
 art=${1:?artifact directory}
@@ -29,8 +34,12 @@ chown -R 0:0 "$dest"
 find "$dest" -type d -exec chmod 0755 {} +
 find "$dest" -type f -exec chmod 0644 {} +
 chmod 0755 "$dest/NativeAdrenoMetal" "$dest/libvulkan_freedreno.dylib"
-# stage 1: no publish marker (the render server keeps its own renderer)
-rm -f "$mnt/private/var/ngpu/addons/NativeAdrenoMetal.publish"
+marker=$mnt/System/Library/Extensions/NativeAdrenoMetal.publish
+if [ $publish = 1 ]; then
+  echo published > "$marker"; chown 0:0 "$marker"; chmod 0644 "$marker"; echo "publish marker set"
+else
+  rm -f "$marker"; echo "stage 1: no publish marker"
+fi
 ls -la "$dest"
 sync
 umount "$mnt"
