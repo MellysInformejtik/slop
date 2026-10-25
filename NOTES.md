@@ -16,6 +16,9 @@
 - Same shape as Bergamota's iOS 16 Apple-logo stall: lsd waits in MobileGestalt for the Wi-Fi address (IONetworkController match timeout). Our ADT had no /chosen mac-address-wifi0 / mac-address-bluetooth0: added to negroni-ios/tools/mkadt.py (02:00:5e:6e:e0:01 / b0:01); unixnu/inputs/negroni.adt rebuilt (now preferred over ~/ios-work/negroni-ios-out/unixnu/negroni.adt). Boot image `unixnu/out/boot_a-ios18-mac.img` (e3dfd355, sampler backboardd,SpringBoard,lsd) flashed from OrangeFox with vendor_boot/vbmeta/dtbo, verified. Rebooted.
 - **MILESTONE 2026-10-25: iOS 18.7.8 boots to the UI on negroni ("everything works fine now", user).** Fix was the /chosen MAC addresses (lsd/MobileGestalt). Boot image on boot_a: `unixnu/out/boot_a-ios18-mac.img` (e3dfd355, sampler on). Clean default image (board.toml defaults, sampler off): `unixnu/out/boot_a-ios18.img` (16a18cbb). UniXNU-negroni 31a17ea (iOS 18 defaults, README) and ios-sweet 79efad6/05106c5: local, not pushed.
 - Next (user): GPU on iOS 18 (the 0127 IOAcceleratorES stub must be replaced by the real accelerator, not duplicated).
+- GPU on iOS 18 (kernel CI 40204726300 = 0128 physmap trace, branch codex/ios18-physmap-trace; `unixnu/out/boot_a-ios18-physmap.img` 0bcae0d8, + negroniadreno=22 negroniadreno_keep=1): user unlocked and used the phone, NO panic. Log: all 22 steps, "THE GPU DREW A PICTURE", "the 3D core stays on; RedwoodGPU for programs", GPU WATCH to 150 s with CX/GX on, HW_FAULT 0, FSR clean; no PHYSMAP line. The iOS 16 phystokv panic does not reproduce on iOS 18. fwarea at block 6288383 intact (b25a66ae) after the fastboot userdata flash.
+- Seen: SpringBoard exec'd twice (pid 27, later 1010), crashes of MessagesBlastDoor/MauiAUSP/KonaSynthesizer (not GPU).
+- Next: gl_test (Mesa freedreno over RedwoodGPU) into the iOS 18 root.
 
 ## 2026-10-22 Negroni Windows Adreno 730 research
 
