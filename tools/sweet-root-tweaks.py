@@ -29,7 +29,9 @@ screen (image versions v8-v14 in NOTES.md):
 """
 import glob, os, plistlib, shutil, sys
 
-BUILD, VERSION = '20H392', '16.7.16'
+# iOS 16 by default; the iOS 18 root build sets NEGRONI_IOS_BUILD=22H352 NEGRONI_IOS_VERSION=18.7.8
+BUILD = os.environ.get('NEGRONI_IOS_BUILD', '20H392')
+VERSION = os.environ.get('NEGRONI_IOS_VERSION', '16.7.16')
 MOBILE = 501
 
 
@@ -122,12 +124,33 @@ def audio(root):
         print('StartRecorderServer off', os.path.relpath(conf, root))
 
 
+def event_timing(root):
+    # UIKit looks up /System/Library/EventTimingProfiles/<target>.{Default,Touch}.plist with the ADT target-type
+    # (D22, iPhone X); an iOS 18 userland from the iPhone XR ships N841 profiles only (Bergamota root_tweaks18).
+    d = os.path.join(root, 'System/Library/EventTimingProfiles')
+    for kind in ('Default', 'Touch'):
+        s, t = os.path.join(d, 'N841.%s.plist' % kind), os.path.join(d, 'D22.%s.plist' % kind)
+        if os.path.exists(s) and not os.path.exists(t):
+            shutil.copy2(s, t)
+            print('event timing profile', t)
+
+
+def launchservices(root):
+    # a LaunchServices database seeded before the system was complete is reused as it is: drop it, lsd re-seeds
+    for p in glob.glob(os.path.join(root, 'private/var/mobile/Containers/Data/InternalDaemon/*/'
+                                          'Library/Caches/com.apple.LaunchServices*')):
+        os.remove(p)
+        print('rm', p)
+
+
 def main():
     if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
         sys.exit(__doc__)
     root = sys.argv[1]
     launchd(root)
     containers(root)
+    launchservices(root)
+    event_timing(root)
     activation(root)
     audio(root)
     merge_pref(root, 'com.apple.migration', {
