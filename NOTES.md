@@ -18,7 +18,9 @@
 - Next (user): GPU on iOS 18 (the 0127 IOAcceleratorES stub must be replaced by the real accelerator, not duplicated).
 - GPU on iOS 18 (kernel CI 40204726300 = 0128 physmap trace, branch codex/ios18-physmap-trace; `unixnu/out/boot_a-ios18-physmap.img` 0bcae0d8, + negroniadreno=22 negroniadreno_keep=1): user unlocked and used the phone, NO panic. Log: all 22 steps, "THE GPU DREW A PICTURE", "the 3D core stays on; RedwoodGPU for programs", GPU WATCH to 150 s with CX/GX on, HW_FAULT 0, FSR clean; no PHYSMAP line. The iOS 16 phystokv panic does not reproduce on iOS 18. fwarea at block 6288383 intact (b25a66ae) after the fastboot userdata flash.
 - Seen: SpringBoard exec'd twice (pid 27, later 1010), crashes of MessagesBlastDoor/MauiAUSP/KonaSynthesizer (not GPU).
-- Next: gl_test (Mesa freedreno over RedwoodGPU) into the iOS 18 root.
+- gl_test boot (root reflashed with install-gl-test.sh, fastboot 69/69 OKAY; same boot_a-ios18-physmap.img): UI (home screen) up, "RedwoodGPU: opened by gl_test (pid 280)", then ~4 min after boot PANIC (photo): `phystokv_range: illegal PA 0x9d520000 @arm_vm_init.c`, phys base 0x841004000 size 0xc0000000, caller 0xfffffe0007aed520 = `_phystokv_range.cold.1` (kernel ran UNSLID: addresses match the CI kernel file directly). The panic text and the NEGRONI PHYSMAP lines did NOT reach the persistent log (it ends before the panic). phystokv_range callers in this kernel: bcopy_phys_internal, bzero_phys, flush_dcache, clean_dcache, dcache_incoherent_io_flush64/store64 (none called from negroni GPU code with a GPU address -> generic IOKit path).
+- Logs: `~/ios-work/logs/ios18-gltest-panic-1025.{txt,bin,png}` (panic boot log, raw 4 MiB ring, photo) and `~/ios-work/logs/ios18-gpu-keep-nopanic-1025.txt` (GPU kept, no gl_test, no panic). Disassembly: `llvm-objdump -d unixnu/inputs/40204726300/kernel.development.negroni`.
+- Next: reproduce and photograph the whole panic screen (backtrace frames, unslid), or make 0128 put the caller frames into the panic string. boot_a/vendor_boot/vbmeta/dtbo restored for that boot; fwarea intact.
 
 ## 2026-10-22 Negroni Windows Adreno 730 research
 
