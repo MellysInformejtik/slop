@@ -14,3 +14,11 @@ branch ios18) iOS 18.7.8 patches for the same xnu-8796 base, renamed sweet -> ne
   Bluetooth), 0144-0146/0148-0153/0155 (diagnostics), 0158 (their USB BPF).
 
 Not built yet (CI needs a push). Userland: iOS 18.7.8 iPhone11,8 (22H352) root, identity iPhone X (D22) as now.
+
+0128-ios18-physmap-failure-trace.patch adds failure-only caller and bounded
+16-frame diagnostics to phystokv, phystokv_range and ml_static_vtop. It preserves
+the original range checks and panics; it does not map reserved memory. Look for
+`NEGRONI PHYSMAP:` before the panic. Raw frame addresses must be symbolicated
+against the exact matching kernel with its slide. Early bootstrap skips stack
+walking, and a one-shot atomic guard suppresses nested diagnostics. This is an
+investigation build, not a demonstrated fix for the GPU panic.

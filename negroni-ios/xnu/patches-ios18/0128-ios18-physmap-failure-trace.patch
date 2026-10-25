@@ -1,0 +1,79 @@
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -30,6 +30,7 @@
+ #include <debug.h>
+ 
+ #include <kern/assert.h>
++#include <kern/backtrace.h>
+ #include <kern/misc_protos.h>
+ #include <kern/monotonic.h>
+ #include <mach/vm_types.h>
+@@ -367,6 +368,44 @@
+ SECURITY_READ_ONLY_LATE(static boolean_t)               kva_active = FALSE;
+ 
+ 
++/* Failure-only diagnostics. Never widen the physmap or touch the rejected PA.
++ * The global guard also prevents recursive faults in printf/backtrace from
++ * recursing through the diagnostic. Every caller still reaches its panic.
++ * Log before panic so framebuffer/console-ring captures contain the frames
++ * even if the later panic-buffer-to-UFS flush cannot complete.
++ */
++static void __attribute__((noinline))
++negroni_trace_bad_physmap(const char *operation, uint64_t address,
++    uint64_t length, uintptr_t caller)
++{
++    static unsigned int entered;
++    uintptr_t frames[16];
++    backtrace_info_t info = BTI_NONE;
++    unsigned int count;
++
++    if (!__sync_bool_compare_and_swap(&entered, 0, 1)) {
++        return;
++    }
++    printf("NEGRONI PHYSMAP: %s addr=0x%llx len=0x%llx caller=0x%llx\n",
++        operation, (unsigned long long)address, (unsigned long long)length,
++        (unsigned long long)caller);
++    printf("NEGRONI PHYSMAP: phys=0x%llx real=0x%llx virt=0x%llx size=0x%llx active=%u\n",
++        (unsigned long long)gPhysBase, (unsigned long long)real_phys_size,
++        (unsigned long long)gVirtBase, (unsigned long long)gPhysSize,
++        (unsigned int)kva_active);
++    /* Early bootstrap does not yet have a normal thread stack. */
++    if (!kva_active) {
++        return;
++    }
++    count = backtrace(frames, 16, NULL, &info);
++    for (unsigned int i = 0; i < count && i < 16; ++i) {
++        printf("NEGRONI PHYSMAP: frame[%u]=0x%llx\n", i,
++            (unsigned long long)frames[i]);
++    }
++    printf("NEGRONI PHYSMAP: end count=%u flags=0x%x\n", count, (unsigned int)info);
++}
++
++
+ vm_map_address_t
+ phystokv(pmap_paddr_t pa)
+ {
+@@ -377,6 +416,7 @@
+ 		}
+ 	}
+ 	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
++		negroni_trace_bad_physmap(__func__, pa, 0, (uintptr_t)__builtin_return_address(0));
+ 		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
+ 		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
+ 	}
+@@ -402,6 +442,7 @@
+ 		*max_len = len;
+ 	}
+ 	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
++		negroni_trace_bad_physmap(__func__, pa, *max_len, (uintptr_t)__builtin_return_address(0));
+ 		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
+ 		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
+ 	}
+@@ -417,6 +458,7 @@
+ 		}
+ 	}
+ 	if (__improbable((va < gVirtBase) || (((vm_address_t)(va) - gVirtBase) >= gPhysSize))) {
++		negroni_trace_bad_physmap(__func__, va, 0, (uintptr_t)__builtin_return_address(0));
+ 		panic("%s: illegal VA: %p; virt base 0x%llx, size 0x%llx", __func__,
+ 		    (void*)va, (unsigned long long)gVirtBase, (unsigned long long)gPhysSize);
+ 	}
