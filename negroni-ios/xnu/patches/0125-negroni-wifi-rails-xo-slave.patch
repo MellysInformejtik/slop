@@ -1,19 +1,8 @@
 diff --git a/bsd/dev/negroni_wifi.c b/bsd/dev/negroni_wifi.c
-index c54f758..9370fc8 100644
+index 6d988e5..748e5a8 100644
 --- a/bsd/dev/negroni_wifi.c
 +++ b/bsd/dev/negroni_wifi.c
-@@ -13,8 +13,8 @@
-  *   4  reads   PCIe0 PARF (0x1c00000) and the PHY (0x1c06000), only if CFG AHB runs: what ABL left
-  *   5  writes  GCC: the PCIe0 GDSC on, the branch votes (0x62008 bits 0-5, 0x62000 bits 11 12 19 22),
-  *              CLKREF_EN, PHY_RCHNG at 100 MHz (GPLL0 / 6), the pipe mux on XO until the PHY runs
-- *   6  writes  TLMM: PERST (94) low, WLAN_EN (80) high, the chip given 50 ms (its rails are the ones step 3
-- *              names; they are left as the firmware set them)
-+ *   6  writes  RPMh: the chip's five rails voted on (apps RSC DRV 2, TCS 2); TLMM: PERST (94) low, then
-+ *              the wcn6855 order: XO clock pin (204) high, WLAN_EN (80) high, XO pin low, 50 ms
-  *   7  writes  the controller (Linux qcom_pcie_init_2_7_0) and the PHY (qmp_pcie_init/power_on, the
-  *              sm8450 gen3x1 tables), pipe mux to the PHY, waits for PHYSTATUS
-  *   8  writes  the root port (bridge class, bus 0 -> 1), iATU 0 bus 1 config at 0x60100000 (ECAM layout),
-@@ -88,6 +88,7 @@ uint32_t negroni_wifi_badge_color = 0x00606060;
+@@ -89,6 +89,7 @@ uint32_t negroni_wifi_badge_color = 0x00606060;
  #define GCC_VOTE_2_PCIE0        0x3fu
  #define WLAN_EN_PIN             80
  #define PERST_PIN               94
@@ -21,95 +10,11 @@ index c54f758..9370fc8 100644
  #define CHIP_ID                 0x110317cbu     /* 17cb:1103 */
  
  static uint32_t pause_ms = 300;
-@@ -295,12 +296,97 @@ gpio_out(uint32_t pin, bool high)
- 	wr(tlmm + TLMM_PIN(pin), 7u << 6 | 1u << 9);           /* gpio function, 16 mA, no pull, output */
- }
- 
-+/*
-+ * The chip's rails voted on through RPMh (Linux qcom-rpmh-regulator: VRM mV at +0, enable at +4 of the
-+ * cmd-db address), from the apps RSC DRV 2 on its last active TCS (2) when idle, as Mu's NegroniPcieDxe
-+ * does; voltages from the vendor DT qcom,cnss-qca6490. Without them SW_CTRL stays 0 and the link never
-+ * leaves Detect.
-+ */
-+#define RSC_DRV2_PHYS           0x17a20000UL
-+#define RSC_DRV_SIZE            0x10000UL
-+#define RSC_TCS_BASE            0xd00u
-+#define RSC_TCS                 2u
-+
-+static const struct { const char *name; uint32_t mv; } wifi_rails[] = {
-+	{ "smpb10", 1800 }, { "smpb11", 966 }, { "smpb12", 1350 }, { "smpc1", 1900 }, { "smpe2", 1012 },
-+};
-+
-+static bool
-+rails_on(void)
-+{
-+	vm_offset_t rsc = ml_io_map(RSC_DRV2_PHYS, RSC_DRV_SIZE), tcs;
-+	uint32_t addr[5], v3, cmd_size, control, status, enable, msgid, caddr, cdata, cstatus, n = 0, i;
-+
-+	for (i = 0; i < 5; i++) {
-+		if (cmd_db_lookup(wifi_rails[i].name, &addr[i]) != 0) {
-+			printf("NEGRONI WIFI: 6 rail %s not in cmd-db\n", wifi_rails[i].name);
-+			return false;
-+		}
-+	}
-+	v3 = ((rd(rsc) >> 16) & 0xff) >= 3;     /* rpmh_rsc_reg_offset_ver_3_0 / _2_7 */
-+	cmd_size = v3 ? 24 : 20;
-+	control = v3 ? 0x24 : 0x14;
-+	status = v3 ? 0x28 : 0x18;
-+	enable = v3 ? 0x2c : 0x1c;
-+	msgid = v3 ? 0x34 : 0x30;
-+	caddr = v3 ? 0x38 : 0x34;
-+	cdata = v3 ? 0x3c : 0x38;
-+	cstatus = v3 ? 0x40 : 0x3c;
-+	tcs = rsc + RSC_TCS_BASE + 672 * RSC_TCS;
-+	if (!(rd(tcs + status) & 1)) {
-+		printf("NEGRONI WIFI: 6 RSC TCS %u busy\n", RSC_TCS);
-+		return false;
-+	}
-+	for (i = 0; i < 5; i++, n++) {
-+		wr(tcs + msgid + cmd_size * n, 8u | 1u << 16 | 1u << 8);
-+		wr(tcs + caddr + cmd_size * n, addr[i]);
-+		wr(tcs + cdata + cmd_size * n, wifi_rails[i].mv);
-+	}
-+	for (i = 0; i < 5; i++, n++) {
-+		wr(tcs + msgid + cmd_size * n, 8u | 1u << 16 | 1u << 8);
-+		wr(tcs + caddr + cmd_size * n, addr[i] + 4);
-+		wr(tcs + cdata + cmd_size * n, 1);
-+	}
-+	wr(tcs + enable, (1u << n) - 1);
-+	clear(tcs + control, 1u << 24);
-+	clear(tcs + control, 1u << 16);
-+	wr(tcs + control, 1u << 16);
-+	wr(tcs + control, 1u << 16 | 1u << 24);
-+	for (i = 0; i < 100; i++) {
-+		uint32_t done = 0;
-+		for (uint32_t c = 0; c < n; c++) {
-+			done += (rd(tcs + cstatus + cmd_size * c) >> 16) & 1;
-+		}
-+		if (done == n) {
-+			break;
-+		}
-+		delay(1000);
-+	}
-+	printf("NEGRONI WIFI: 6 rails: %u votes %s after %u ms (RSC v%u)\n", n, i < 100 ? "done" : "NOT done", i, v3 ? 3 : 2);
-+	wr(rsc + RSC_TCS_BASE + 0x08, 1u << RSC_TCS);        /* IRQ clear */
-+	clear(tcs + control, 1u << 24);
-+	clear(tcs + control, 1u << 16);
-+	wr(tcs + enable, 0);
-+	delay(10000);
-+	return i < 100;
-+}
-+
- static bool
- step_chip_on(void)
- {
--	announce("hold PERST low and drive WLAN_EN high (TLMM writes)");
-+	announce("vote the chip's rails on (RPMh) and power it up (Linux pwrseq wcn6855: XO pin, WLAN_EN)");
-+	if (!rails_on()) {
-+		return false;
-+	}
- 	gpio_out(PERST_PIN, false);
-+	gpio_out(WLAN_EN_PIN, false);
+@@ -324,7 +325,14 @@ step_chip_on(void)
+ 			return false;
+ 		}
+ 	}
++	/* Linux pwrseq-qcom-wcn (wcn6855): XO clock pin high, WLAN_EN high, then the XO pin low and 50 ms */
 +	gpio_out(XO_CLK_PIN, false);
 +	delay(10000);
 +	gpio_out(XO_CLK_PIN, true);
@@ -120,7 +25,7 @@ index c54f758..9370fc8 100644
  	delay(50000);
  	printf("NEGRONI WIFI: 6 WLAN_EN out %u, PERST out %u, SW_CTRL in %u\n", (rd(tlmm + TLMM_PIN(WLAN_EN_PIN) + 4) >> 1) & 1,
  	    (rd(tlmm + TLMM_PIN(PERST_PIN) + 4) >> 1) & 1, rd(tlmm + TLMM_PIN(82) + 4) & 1);
-@@ -335,6 +421,8 @@ step_phy(void)
+@@ -359,6 +367,8 @@ step_phy(void)
  	wr(parf + PARF_DBI_BASE_ADDR_V2_HI, 0);
  	wr(parf + PARF_ATU_BASE_ADDR, (uint32_t)(DBI_PHYS + ATU_OFFSET));
  	wr(parf + PARF_ATU_BASE_ADDR_HI, 0);

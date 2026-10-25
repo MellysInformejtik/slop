@@ -384,10 +384,20 @@ index 9ba4ffb..218abd0 100644
 +    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED,
 +    0, 0, sysctl_exclaves_boot_stage, "I", "Boot stage of Exclaves");
 diff --git a/bsd/kern/negroni_amfi.c b/bsd/kern/negroni_amfi.c
-index 3fc7b08..bd74be0 100644
+index 3fc7b08..06ad4dd 100644
 --- a/bsd/kern/negroni_amfi.c
 +++ b/bsd/kern/negroni_amfi.c
-@@ -280,25 +280,124 @@ negroni_amfi_vnode_check_signature(struct vnode *vp, __unused struct label *labe
+@@ -34,6 +34,9 @@
+ #include <sys/systm.h>
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode.h>
++#include <machine/atomic.h>
++#include <pexpert/pexpert.h>
++#include <kern/clock.h>
+ #include <security/mac_policy.h>
+ 
+ /* iokit/Kernel/arm/NegroniEntitlements.cpp */
+@@ -280,25 +283,124 @@ negroni_amfi_vnode_check_signature(struct vnode *vp, __unused struct label *labe
   * (backboardd cannot reach mobilegestalt or iohideventsystem; tccd:
   * "profile not found"). NEGRONI runs without a sandbox: operations succeed
   * (checks allow, profile init is accepted); the few that must return
@@ -523,7 +533,7 @@ index 3fc7b08..bd74be0 100644
  		return ENOENT;
  	default:
  		return 0;
-@@ -367,6 +466,75 @@ static struct mac_policy_conf negroni_amfi_mac_conf = {
+@@ -367,6 +469,75 @@ static struct mac_policy_conf negroni_amfi_mac_conf = {
  
  static mac_policy_handle_t negroni_amfi_mac_handle;
  
@@ -599,7 +609,7 @@ index 3fc7b08..bd74be0 100644
  /* Called from bsd_init once MAC policies can register, before any exec. */
  void negroni_amfi_policy_register(void);
  
-@@ -376,8 +544,69 @@ negroni_amfi_policy_register(void)
+@@ -376,8 +547,69 @@ negroni_amfi_policy_register(void)
  	int error = mac_policy_register(&negroni_amfi_mac_conf, &negroni_amfi_mac_handle, NULL);
  	printf("NEGRONI AMFI: platform binary policy %s (%d)\n",
  	    error ? "NOT registered" : "registered", error);
