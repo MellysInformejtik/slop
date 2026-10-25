@@ -327,7 +327,7 @@ index c8f7887..00f0a28 100644
  	if (accel != NULL && accel->init()) {
  		accel->setName("sgx");
 diff --git a/iokit/Kernel/arm/NegroniGPU.cpp b/iokit/Kernel/arm/NegroniGPU.cpp
-index 4e6c9c1..8f7ff68 100644
+index 4e6c9c1..2b0e815 100644
 --- a/iokit/Kernel/arm/NegroniGPU.cpp
 +++ b/iokit/Kernel/arm/NegroniGPU.cpp
 @@ -26,6 +26,8 @@
@@ -420,7 +420,7 @@ index 4e6c9c1..8f7ff68 100644
 +
 +	struct metal_object * object(uint64_t handle);
 +	struct metal_object * freeObject(uint64_t * handle);
-+	void release(struct metal_object * o);
++	void releaseObject(struct metal_object * o);
 +	IOReturn run(uint32_t method, const void * input, size_t inputSize, void * output, size_t outputSize);
 +	IOReturn boAlloc(const NativeAdrenoAbiBoAlloc * request, NativeAdrenoAbiBoAllocReply * reply);
 +	IOReturn boImport(const NativeAdrenoAbiBoImport * request, NativeAdrenoAbiBoAllocReply * reply);
@@ -565,7 +565,7 @@ index 4e6c9c1..8f7ff68 100644
 +
 +/* With the lock held. Memory the GPU may still use stays the GPU's for good, as RedwoodGPU's. */
 +void
-+AGXDeviceUserClient::release(struct metal_object * o)
++AGXDeviceUserClient::releaseObject(struct metal_object * o)
 +{
 +	bool busy = o->fence != 0 && !negroni_gpu_done(o->fence) && !gpuWait(o->fence, 1000);
 +
@@ -591,7 +591,7 @@ index 4e6c9c1..8f7ff68 100644
 +		gpuWait(negroni_gpu_last(), 1000);
 +		for (uint32_t i = 0; i < METAL_OBJECTS; i++) {
 +			if (fObjects[i].memory != NULL) {
-+				release(&fObjects[i]);
++				releaseObject(&fObjects[i]);
 +			}
 +		}
 +	}
@@ -739,7 +739,7 @@ index 4e6c9c1..8f7ff68 100644
 +	if (o->cpu_leases != 0) {
 +		return kIOReturnBusy;
 +	}
-+	release(o);
++	releaseObject(o);
 +	return kIOReturnSuccess;
 +}
 +
