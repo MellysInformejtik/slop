@@ -14,7 +14,8 @@
 - 0127 boot: stub found (1 found), display on at once, IOSurface limits, still no surface create; IOAcceleratorES later "0 found" 145x (stub gone? unexplained).
 - Sampler (boot-arg negronisample=backboardd,SpringBoard; board.toml has negronisample=-): backboardd t0 stuck in all samples in `-[LSApplicationRecord initWithBundleIdentifier:]` -> `_LSContextInitCommon` -> `_LSCopyServerStore` -> NSXPC sync reply = waits on lsd; SpringBoard t0 also in LSContext _get. lsd exec'd once, no crash. Symbolication: shared cache copied with Bergamota tools/ios18/hfsx.py (simg, no sudo) to ~/ios-work/ios18/dsc (+ .symbols), `ipsw dyld a2s dyld_shared_cache_arm64e ADDR -s SLIDE -i --cache ~/ios-work/ios18/dsc.a2s`.
 - Same shape as Bergamota's iOS 16 Apple-logo stall: lsd waits in MobileGestalt for the Wi-Fi address (IONetworkController match timeout). Our ADT had no /chosen mac-address-wifi0 / mac-address-bluetooth0: added to negroni-ios/tools/mkadt.py (02:00:5e:6e:e0:01 / b0:01); unixnu/inputs/negroni.adt rebuilt (now preferred over ~/ios-work/negroni-ios-out/unixnu/negroni.adt). Boot image `unixnu/out/boot_a-ios18-mac.img` (e3dfd355, sampler backboardd,SpringBoard,lsd) flashed from OrangeFox with vendor_boot/vbmeta/dtbo, verified. Rebooted.
-- Next: if still stuck, symbolicate the lsd samples.
+- **MILESTONE 2026-10-25: iOS 18.7.8 boots to the UI on negroni ("everything works fine now", user).** Fix was the /chosen MAC addresses (lsd/MobileGestalt). Boot image on boot_a: `unixnu/out/boot_a-ios18-mac.img` (e3dfd355, sampler on). Clean default image (board.toml defaults, sampler off): `unixnu/out/boot_a-ios18.img` (16a18cbb). UniXNU-negroni 31a17ea (iOS 18 defaults, README) and ios-sweet 79efad6/05106c5: local, not pushed.
+- Next (user): GPU on iOS 18 (the 0127 IOAcceleratorES stub must be replaced by the real accelerator, not duplicated).
 
 ## 2026-10-22 Negroni Windows Adreno 730 research
 
