@@ -34,13 +34,14 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           rustc --version
 
-      - name: UniXNU (pinned, NativeMetal + NativeAdreno)
+      - name: UniXNU (pinned: NativeMetal, NativeAdreno, AdrenoPM4, ArmSmmu4K, AdrenoFirmware)
         run: |
           U="$RUNNER_TEMP/UniXNU"
           git clone -q "$UNIXNU_REPO" "$U"
           git -C "$U" checkout -q "$UNIXNU_COMMIT"
-          git -C "$U" submodule update --init --depth 50 drivers/NativeMetal drivers/NativeAdreno
-          git -C "$U" submodule status drivers/NativeMetal drivers/NativeAdreno
+          M="drivers/NativeMetal drivers/NativeAdreno kits/AdrenoPM4 kits/ArmSmmu4K kits/AdrenoFirmware"
+          git -C "$U" submodule update --init --depth 50 $M
+          git -C "$U" submodule status $M
           echo "U=$U" >> "$GITHUB_ENV"
 
       - name: Pinned inputs (.cache)
