@@ -80,6 +80,20 @@ jobs:
           cd "$U"
           python3 scripts/build-turnip-darwin.py --target host || { tail -60 .cache/mesa-tu-host-*.log; exit 1; }
 
+      - name: Skip the host check UniXNU does not ship
+        if: inputs.stage == 'plugin'
+        run: |
+          # check-turnip-darwin-host.py calls scripts/check-quartzcore-turnip-cache-host.py, which is not in UniXNU at this
+          # revision; it is a host-only cache control (no shader runs), so its block is dropped while the file is missing
+          cd "$U"
+          python3 - <<'PY'
+          from pathlib import Path
+          if not Path('scripts/check-quartzcore-turnip-cache-host.py').exists():
+              p = Path('scripts/check-turnip-darwin-host.py'); s = p.read_text()
+              block = s[s.index("with tempfile.TemporaryDirectory(prefix='quartzcore-driver-cache-'"):s.index("with tempfile.TemporaryDirectory(prefix='priming-driver-cache-'")]
+              p.write_text(s.replace(block, '')); print('dropped the QuartzCore driver-cache control')
+          PY
+
       - name: NativeMetal plugin
         if: inputs.stage == 'plugin'
         run: |
