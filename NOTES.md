@@ -7,7 +7,9 @@
 - The phone's HFS+ had changed a lot since the flash (about 2k files and 80k blocks; writeCount 0x164e9), so the image's block diff was NOT written. Instead launchd.plist was patched on the phone: in the LaunchDaemons dict, the 2-byte value ref of `/System/Library/LaunchDaemons/com.apple.security.cryptexd.plist` now points at an existing empty dict (obj 1899; it was 19000). Same file size, no metadata change. sda14 4K block 2807886, file offset 309099; written and read back OK. Original block: `~/ios-work/launchd-blk2807886-orig.bin` (dd it back with seek=2807886 to revert).
 - GPT checked against `negroni-gpt/sda-gpt-andromeda-split.bin`: userdata/esp/win entries identical; only the vbmeta_system/vbmeta_vendor A/B type GUIDs are swapped (slot bookkeeping) plus the CRCs. Not restored.
 - boot_a held a different (OrangeFox?) image; backed up to `~/ios-work/boot_a-before-ios18-restore-10250459.img` and rewritten with `unixnu/out/boot_a-ios18.img` (21ebe831). vendor_boot_a (77424da2), vbmeta_a flags 3 (efc6c16a) and dtbo_a zeroed, all verified.
-- Next: boot iOS 18 and check that the log has no cryptexd exec/CRASH lines; the empty-dict job should be skipped by launchd (unverified).
+- Then, at the user's request: GPT primary + backup rewritten to the andromeda-split entries (vbmeta_system/vbmeta_vendor type GUIDs swapped back), read back OK; pre-revert copies in `~/ios-work/negroni-gpt/sda-*-before-revert-1025.bin`. The in-place patch was superseded by a full userdata rewrite with the fixed image.
+- Streaming the raw image with `adb exec-in "dd of=/dev/block/sda14"` from OrangeFox CORRUPTED it (sizes matched and adb exited 0, but 21 of 22 GiB hashed differently; the phone's data was shifted by 128 bytes against the image). Don't use it. Reflashed with `fastboot -S 256M flash userdata ~/ios-work/ios18-root-full.simg` (regenerated 05:35, 17988865756 bytes): 69/69 chunks OKAY, 1006 s. Then `fastboot reboot`.
+- Next: check that the iOS 18 log has no cryptexd exec/CRASH lines.
 
 ## 2026-10-22 Negroni Windows Adreno 730 research
 
