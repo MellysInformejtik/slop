@@ -24,7 +24,7 @@ negroni_trace_bad_physmap(const char *operation, uint64_t address,
     uint64_t length, uintptr_t caller)
 {
     static unsigned int entered;
-    uintptr_t frames[16];
+    uintptr_t frames[16] = { 0 };
     backtrace_info_t info = BTI_NONE;
     unsigned int count;
 
@@ -47,7 +47,7 @@ negroni_trace_bad_physmap(const char *operation, uint64_t address,
         printf("NEGRONI PHYSMAP: frame[%u]=0x%llx\n", i,
             (unsigned long long)frames[i]);
     }
-    printf("NEGRONI PHYSMAP: end count=%u flags=0x%x\n", count, (unsigned int)info);
+    panic("NEGRONI PHYSMAP %s pa 0x%llx caller 0x%llx bt 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx (count %u)", operation, (unsigned long long)address, (unsigned long long)caller, frames[0], frames[1], frames[2], frames[3], frames[4], frames[5], frames[6], frames[7], count);
 }
 '''
 after = after.replace(marker, helper + marker, 1)
