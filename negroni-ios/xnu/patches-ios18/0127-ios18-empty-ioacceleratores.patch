@@ -1,0 +1,45 @@
+diff --git a/iokit/Kernel/arm/NegroniFramebuffer.cpp b/iokit/Kernel/arm/NegroniFramebuffer.cpp
+index 06ff02e..c8f7887 100644
+--- a/iokit/Kernel/arm/NegroniFramebuffer.cpp
++++ b/iokit/Kernel/arm/NegroniFramebuffer.cpp
+@@ -94,6 +94,22 @@ class IOMobileFramebuffer : public IOService {
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
+ 
++/*
++ * The graphics accelerator's service class (ios-topaz 0138, Bergamota 0122). QuartzCore
++ * (CAMetalContextCreate, once per process) polls IOServiceMatching(
++ * "IOAcceleratorES") 300 times, 100 ms apart, before it goes on: thirty
++ * seconds at every backboardd start. iOS 18 backboardd then opens IOSurface
++ * and never creates a surface. One without MetalPluginName/MetalPluginClassName
++ * is found and then passed over by Metal (_MTLRegisterDevices), which leaves
++ * the renderers as they were. A real GPU driver must replace this stub, not
++ * add a second service: Metal wants exactly one.
++ */
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
+ class IOMobileFramebufferUserClient;
+ 
+ class AppleCLCD : public IOMobileFramebuffer {
+@@ -173,6 +189,17 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("NEGRONI FB: no boot framebuffer\n");
+ 		return false;
+ 	}
++	uint32_t accelOn = 1;
++	(void)PE_parse_boot_argn("negroniaccel", &accelOn, sizeof(accelOn));
++	IOAcceleratorES *accel = accelOn ? OSTypeAlloc(IOAcceleratorES) : NULL;
++	if (accel != NULL && accel->init()) {
++		accel->setName("sgx");
++		if (accel->attach(this)) {
++			accel->registerService();
++			IOLog("NEGRONI FB: empty IOAcceleratorES published (no 30 s wait in CAMetalContextCreate)\n");
++		}
++	}
++	OSSafeReleaseNULL(accel);
+ 	int native = 0;
+ 	PE_parse_boot_argn("negronifb_native", &native, sizeof(native));
+ 	fLogicalW = fWidth;
