@@ -850,3 +850,16 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - ACPICA 20250404 compile passed with zero errors/warnings/remarks. Mu DEBUG passed (78 images validated), then shim packaging succeeded using `SYNC_TOUCH_HEADERS=0` and `noflash`. Added optional touch-sync guard to shim-mu.sh; first build was stopped after noticing its default copy of canonical touch headers changed the active Mu source. Restored only those seven files changed by that invocation and rebuilt with original active touch sources. Existing dirty Mu_Basecore submodule preserved.
 - Candidate: `C:\Users\paw\ios-sweet\shim\out\negroni-uefi\boot_a-windows-usb-enum.img`, SHA256 `04cd1cb0af8bad78f3e368f873dcdb2cc9a1ebf348596cdf5f967682ea04b1be`. Prior generic image backed up next to it before build. External ACPI commit `0e41763`, Mu pointer commit `5abc082e`, local only. No phone access, flash, role changes or Windows driver installation. Candidate includes the current Mu PCIe/GPU ACPI from the other session.
 - Added read-only `windows/diag/usb-host-diag.ps1` (PowerShell parser check passed). Run on phone Windows before/after hub attachment to capture QCOM0497/URS/UCM/USB devices, INF/service bindings, problem codes/status, controller/hub listings and recent PnP events. Not run on the phone. Next: obtain current report, test candidate under coordinated access, then resolve actual driver binding/connector/VBUS failures. Do not force booster GPIO64 or OVP GPIO57 without negotiated cable/power-role evidence. Wi-Fi Code 12 and A730 Code 37 remain separate unfinished requests; latest user prioritized USB.
+
+## 2026-10-25 iOS 18 port (Bergamota approach: iOS 18.7.8 iPhone11,8 userland, iPhone X D22 identity, xnu-8796)
+- Reference: github.com/ry-diffusion/Bergamota branch ios18 (iOS 18 SpringBoard on the Poco F1, 2026-10-23).
+- Kernel: xnu-C branch `ios18` (aac38b6, 8dae5a0) = Bergamota 0131 0135 0136 0138-0143 0147 0154 0156 0157 0159
+  0160 + prerequisites 0099 0106 0116 0119-0123, renamed sweet->negroni; 0147 hooked after exec_extract_strings;
+  0097 dropped (our framebuffer copies at swap time); diagnostics 0144-0146/0148-0153/0155, BT 0132/0133, USB 0158
+  not taken. Exported as negroni-ios/xnu/patches-ios18/0126-ios18-userland.patch (26 files, +1852). CI input
+  `ios18` (workflow change 8279a34). NOT BUILT: the push was blocked by the permission check (18 local commits).
+- Userland: ~/ios-work/ios18/ipsw/22H352__iPhone11,8/094-{31934,32062,32850}-020.dmg (decrypted, ipsw 3.1.739 in
+  ~/ios-work/tools/bin). negroni-ios/tools/build-ios18-root.sh (sudo): mkiosroot.sh 22G + root tweaks with
+  NEGRONI_IOS_BUILD=22H352 (+ D22 event timing, LaunchServices reset) + staged apps + Sileo -> ios18-root-full.simg.
+  No pacstrip: SM8450 has PAuth and the kernel leaves the keys off (PAC = pass-through), so Apple's signatures stay
+  valid. Unverified; fallback = Bergamota tools/ios18/pacstrip*.py. Boot args: + negroniarm64e=1, no GPU.
