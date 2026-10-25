@@ -172,8 +172,8 @@ def build(seed=None, qemu=False, highmem=False, board='negroni', dram=None, ufs=
         # with CSR_ALLOW_UNRESTRICTED_FS (vm_unix.c shared region checks).
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])])
 
-    # NEGRONI SMP: all eight cores in physical-core order (0-5 Cortex-A55,
-    # 6-7 Cortex-A76), one homogeneous cluster. The kernel defaults to one
+    # NEGRONI SMP: all eight cores in physical-core order (0-3 Cortex-A510,
+    # 4-6 Cortex-A710, 7 Cortex-X2; ARMv9.0), one homogeneous cluster. The kernel defaults to one
     # and uses cpus=N to select an initial prefix (N <= 8).
     # QEMU retains its original single-CPU tree: its MPIDRs differ from negroni.
     # negroni has the same MPIDR scheme (Aff1 = core 0-7, Aff0 = 0).
