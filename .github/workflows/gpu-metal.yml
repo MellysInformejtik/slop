@@ -34,7 +34,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           rustc --version
 
-      - name: UniXNU (pinned: NativeMetal, NativeAdreno, AdrenoPM4, ArmSmmu4K, AdrenoFirmware)
+      - name: "UniXNU (pinned): NativeMetal, NativeAdreno, AdrenoPM4, ArmSmmu4K, AdrenoFirmware"
         run: |
           U="$RUNNER_TEMP/UniXNU"
           git clone -q "$UNIXNU_REPO" "$U"
