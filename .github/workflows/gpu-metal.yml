@@ -80,19 +80,23 @@ jobs:
           cd "$U"
           python3 scripts/build-turnip-darwin.py --target host || { tail -60 .cache/mesa-tu-host-*.log; exit 1; }
 
-      - name: Skip the host-only cache controls
+      - name: Skip the host-only controls
         if: inputs.stage == 'plugin'
         run: |
           # check-turnip-darwin-host.py (run by gen-turnip-replay.py for the plugin's recorded smoke submission) ends with two
           # host-only cache controls that run no shader: check-quartzcore-turnip-cache-host.py is not in UniXNU at this revision,
-          # check-priming-cache-host.py does not compile on the runner. Neither feeds the build; both blocks are dropped.
+          # check-priming-cache-host.py does not compile on the runner; the final watchdog control cannot sample on the runner.
+          # None feeds the build (the replay needs only libhostiokit.dylib and plugin_smoke); they are dropped.
           cd "$U"
           python3 - <<'PY'
           from pathlib import Path
           p = Path('scripts/check-turnip-darwin-host.py'); s = p.read_text()
           a = s.index("with tempfile.TemporaryDirectory(prefix='quartzcore-driver-cache-'")
           b = s.index("env_plugin = dict(env)")
-          p.write_text(s[:a] + s[b:]); print('dropped', s[a:b].count('subprocess.run'), 'host cache controls')
+          s = s[:a] + s[b:]
+          # the stalled-worker watchdog control needs the runner to sample a thread, which it does not allow
+          w = s.index('# Watchdog:')
+          p.write_text(s[:w]); print('dropped', s.count('subprocess.run') - p.read_text().count('subprocess.run'), 'host-only controls')
           PY
 
       - name: NativeMetal plugin
