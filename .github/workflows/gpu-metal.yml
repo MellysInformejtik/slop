@@ -28,7 +28,8 @@ jobs:
       - name: Tools
         run: |
           brew install meson ninja llvm bison flex glslang
-          rustup target add aarch64-apple-ios
+          # build-native-metal-bridge.py runs `cargo +1.98.0`
+          rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios
           xcrun --sdk iphoneos --show-sdk-path
           xcrun --sdk iphoneos --show-sdk-version
           rustc --version
