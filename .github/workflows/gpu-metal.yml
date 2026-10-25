@@ -99,6 +99,21 @@ jobs:
           p.write_text(s[:w]); print('dropped', s.count('subprocess.run') - p.read_text().count('subprocess.run'), 'host-only controls')
           PY
 
+      - name: iOS 18 (22H352) adjustments to NativeMetal
+        if: inputs.stage == 'plugin'
+        run: |
+          # The frontend refuses a _MTLDevice whose instance size is not iPadOS 17.7.11's 536 bytes; iOS 18's base class has more
+          # ivars. The dynamic subclass adds none of its own, so any base size works: keep the check for the class, log the size.
+          cd "$U"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('drivers/NativeMetal/NativeBridgeMetalFrontend.mm'); s = p.read_text()
+          old = 'if(!base || class_getInstanceSize(base)!=536){NBLOG(@"native-metal: unexpected _MTLDevice ABI");return nil;}'
+          assert s.count(old) == 1, 'anchor'
+          s = s.replace(old, 'if(!base){NBLOG(@"native-metal: no _MTLDevice");return nil;}\n NBLOG(@"native-metal: _MTLDevice instance size %zu (iPadOS 17.7.11: 536)",class_getInstanceSize(base));')
+          p.write_text(s); print('iOS 18: _MTLDevice size check relaxed')
+          PY
+
       - name: NativeMetal plugin
         if: inputs.stage == 'plugin'
         run: |
