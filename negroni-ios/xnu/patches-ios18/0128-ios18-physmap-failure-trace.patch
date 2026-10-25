@@ -1,14 +1,15 @@
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -30,6 +30,7 @@
+@@ -30,6 +30,8 @@
  #include <debug.h>
  
  #include <kern/assert.h>
 +#include <kern/backtrace.h>
++#include <kern/clock.h>
  #include <kern/misc_protos.h>
  #include <kern/monotonic.h>
  #include <mach/vm_types.h>
-@@ -367,6 +368,44 @@
+@@ -367,6 +369,48 @@
  SECURITY_READ_ONLY_LATE(static boolean_t)               kva_active = FALSE;
  
  
@@ -46,6 +47,10 @@
 +        printf("NEGRONI PHYSMAP: frame[%u]=0x%llx\n", i,
 +            (unsigned long long)frames[i]);
 +    }
++    printf("NEGRONI PHYSMAP: end count=%u flags=0x%x\n", count, (unsigned int)info);
++    /* The panic log does not reach the partition; the console ring does, once a second
++     * (ufslogsecs=1, flushed by a thread on another core). Give it three. */
++    delay(3000000);
 +    panic("NEGRONI PHYSMAP %s pa 0x%llx caller 0x%llx bt 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx (count %u)", operation, (unsigned long long)address, (unsigned long long)caller, frames[0], frames[1], frames[2], frames[3], frames[4], frames[5], frames[6], frames[7], count);
 +}
 +
@@ -53,7 +58,7 @@
  vm_map_address_t
  phystokv(pmap_paddr_t pa)
  {
-@@ -377,6 +416,7 @@
+@@ -377,6 +421,7 @@
  		}
  	}
  	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
@@ -61,7 +66,7 @@
  		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
  		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
  	}
-@@ -402,6 +442,7 @@
+@@ -402,6 +447,7 @@
  		*max_len = len;
  	}
  	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
@@ -69,7 +74,7 @@
  		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
  		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
  	}
-@@ -417,6 +458,7 @@
+@@ -417,6 +463,7 @@
  		}
  	}
  	if (__improbable((va < gVirtBase) || (((vm_address_t)(va) - gVirtBase) >= gPhysSize))) {

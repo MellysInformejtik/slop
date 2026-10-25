@@ -8,7 +8,7 @@ source = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2])
 before = source.read_text()
 after = before.replace('#include <kern/assert.h>\n',
-                       '#include <kern/assert.h>\n#include <kern/backtrace.h>\n', 1)
+                       '#include <kern/assert.h>\n#include <kern/backtrace.h>\n#include <kern/clock.h>\n', 1)
 marker = '\n\nvm_map_address_t\nphystokv(pmap_paddr_t pa)'
 assert before.count(marker) == 1
 helper = r'''
@@ -47,6 +47,10 @@ negroni_trace_bad_physmap(const char *operation, uint64_t address,
         printf("NEGRONI PHYSMAP: frame[%u]=0x%llx\n", i,
             (unsigned long long)frames[i]);
     }
+    printf("NEGRONI PHYSMAP: end count=%u flags=0x%x\n", count, (unsigned int)info);
+    /* The panic log does not reach the partition; the console ring does, once a second
+     * (ufslogsecs=1, flushed by a thread on another core). Give it three. */
+    delay(3000000);
     panic("NEGRONI PHYSMAP %s pa 0x%llx caller 0x%llx bt 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx (count %u)", operation, (unsigned long long)address, (unsigned long long)caller, frames[0], frames[1], frames[2], frames[3], frames[4], frames[5], frames[6], frames[7], count);
 }
 '''

@@ -30,6 +30,8 @@ static int trace_printf(const char *format, ...) { assert(format); ++lines; retu
 #define printf trace_printf
 static void trace_panic(const char *format, ...) { assert(format); ++panics; }
 #define panic trace_panic
+static unsigned int delays;
+static void delay(int usec) { assert(usec == 3000000); ++delays; }
 '''
 main = r'''
 int main(int argc, char **argv) {
@@ -37,12 +39,13 @@ int main(int argc, char **argv) {
     kva_active = argc > 1;
     negroni_trace_bad_physmap("phystokv_range", 0xc7a24000, 4096, 0x12345678);
     assert(calls == (kva_active ? 1u : 0u));
-    assert(lines == (kva_active ? 18u : 2u));
+    assert(lines == (kva_active ? 19u : 2u));
     assert(panics == (kva_active ? 1u : 0u));
     negroni_trace_bad_physmap("nested", 0, 0, 0);
     assert(calls == (kva_active ? 1u : 0u));
-    assert(lines == (kva_active ? 18u : 2u));
+    assert(lines == (kva_active ? 19u : 2u));
     assert(panics == (kva_active ? 1u : 0u));
+    assert(delays == panics);
     return 0;
 }
 '''
