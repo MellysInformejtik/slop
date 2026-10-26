@@ -944,3 +944,6 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 - hmos2negroni 48a53ea: ADSP firmware in the initramfs, tqftpserv service.
 - Output in ~/ios-work/hmos-out-full (patches 00,10-16,20-22,30,32,37,38,41,42,46; setup wizard kept). Not flashed yet.
 - Next: flash boot_b/vendor_boot_b/dtbo_b, then super; pull hmdata:/hmos logs; audio needs a HAL/mixer config for the SM8450 card (patch 31 is the sweet audio, not used).
+
+## 2026-10-26 factory GPT restored for LineageOS (user request)
+- From OrangeFox: `sgdisk --load-backup` of the 22 Oct original (`Downloads/negroni-install-gpt-backup/sda-gpt.bin`, b919ff2f). After reboot: sda14 userdata LBA 2839276..30271482 = 104.6 GiB, hmdata gone, verify clean (usual 2 warnings). iOS root and HarmonyOS data are lost. Pre-restore table: `~/ios-work/negroni-gpt/sda-gpt-before-lineage-1026.bin`. HarmonyOS images were not flashed by the agent (user flashed manually, or not at all). Next: user formats data and installs LineageOS.
