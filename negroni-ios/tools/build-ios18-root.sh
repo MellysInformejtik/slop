@@ -9,14 +9,17 @@
 #
 #   negroni-ios/tools/fetch-ios18.sh   (once: ipsw download + AEA decryption into ~/ios-work/ios18/ipsw)
 #   sudo negroni-ios/tools/build-ios18-root.sh [OUT]     (default ~/ios-work/ios18-root-full.img)
+#   NEGRONI_ROOT_SIZE=100G sudo -E ...                   (image size, default 22G; userdata is 104.6 GiB since
+#                                                         2026-10-26, Windows removed: leave >= 12 MiB for log + GPU firmware)
 #
-# Flash: fastboot -S 512M flash userdata OUT.simg   (replaces everything on userdata)
+# Flash: fastboot -S 256M flash userdata OUT.simg   (replaces everything on userdata)
 set -euo pipefail
 U=${SUDO_USER:-$USER}
 H=$(getent passwd "$U" | cut -d: -f6)
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 dmgs=$H/ios-work/ios18/ipsw/22H352__iPhone11,8
 out=${1:-$H/ios-work/ios18-root-full.img}
+size=${NEGRONI_ROOT_SIZE:-22G}
 mnt=/mnt/iosroot
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
 export PATH=$H/ios-work/tools/apfs-fuse/build:$PATH
@@ -27,10 +30,10 @@ for d in 094-31934-020.dmg 094-32062-020.dmg 094-32850-020.dmg; do
 	[ -s "$dmgs/$d" ] || { echo "missing $dmgs/$d (run negroni-ios/tools/fetch-ios18.sh)" >&2; exit 1; }
 done
 
-# 2. the whole system and its cryptexes into a 22 GiB HFS+ image (userdata is 24 GiB); an image left by an earlier run is reused
+# 2. the whole system and its cryptexes into a $size HFS+ image; an image left by an earlier run is reused
 #    (its last read-only fsck may report a harmless "volume header needs minor repair")
 if [ ! -e "$out" ]; then
-	bash "$repo/tools/mkiosroot.sh" "$dmgs/094-31934-020.dmg" "$dmgs/094-32062-020.dmg" "$dmgs/094-32850-020.dmg" "$out" 22G || true
+	bash "$repo/tools/mkiosroot.sh" "$dmgs/094-31934-020.dmg" "$dmgs/094-32062-020.dmg" "$dmgs/094-32850-020.dmg" "$out" "$size" || true
 else
 	echo "reusing $out"
 fi
