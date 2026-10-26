@@ -22,6 +22,9 @@ out=${1:-$H/ios-work/ios18-root-full.img}
 size=${NEGRONI_ROOT_SIZE:-22G}
 mnt=/mnt/iosroot
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
+# without hfsplus mkiosroot.sh leaves an empty image behind, and a later run would reuse it
+grep -qw hfsplus /proc/filesystems || modprobe hfsplus 2>/dev/null || insmod "$H/ios-work/tools/wsl-kernel/fs/hfsplus/hfsplus.ko" || true
+grep -qw hfsplus /proc/filesystems || { echo "no hfsplus in this kernel: sudo insmod ~/ios-work/tools/wsl-kernel/fs/hfsplus/hfsplus.ko" >&2; exit 1; }
 export PATH=$H/ios-work/tools/apfs-fuse/build:$PATH
 
 # 1. the OS, SystemOS and AppOS images (BuildManifest 22H352 iPhone11,8: OS 094-31934-020,
@@ -38,6 +41,11 @@ else
 	echo "reusing $out"
 fi
 [ -f "$out" ] || { echo "no $out" >&2; exit 1; }
+# an image without the OS (a run that failed while copying) must not be reused
+probe=$(mktemp -d); mount -t hfsplus -o loop,ro,force "$out" "$probe"
+[ -d "$probe/System/Library/CoreServices" ] && ok=1 || ok=0
+umount "$probe"; rmdir "$probe"
+[ $ok = 1 ] || { echo "$out has no iOS system in it (an earlier run failed): delete it and run again" >&2; exit 1; }
 
 # 3. data-volume directories, the system keybag, and the boot changes (setup skipped, activation,
 #    CommCenter jobs, migration marker, MediaToolbox, SpringBoard watchdogs)
