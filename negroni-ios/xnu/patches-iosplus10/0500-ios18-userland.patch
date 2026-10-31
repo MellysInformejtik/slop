@@ -1,0 +1,2555 @@
+diff --git a/bsd/dev/arm/kern_machdep.c b/bsd/dev/arm/kern_machdep.c
+index 336b1cc..5efe526 100644
+--- a/bsd/dev/arm/kern_machdep.c
++++ b/bsd/dev/arm/kern_machdep.c
+@@ -19,6 +19,8 @@
+ 
+ #if __arm64__
+ static cpu_subtype_t cpu_subtype32(void);
++/* kern_exec.c: boot-arg negroniarm64e=1 (iOS 18 arm64e userland on a CPU without PAuth) */
++extern bool negroni_arm64e_enabled(void);
+ #endif /* __arm64__ */
+ 
+ #if __arm64__
+@@ -89,6 +91,17 @@ grade_binary(cpu_type_t exectype, cpu_subtype_t execsubtype, cpu_subtype_t execf
+ 				return 10;
+ 			case CPU_SUBTYPE_ARM64_ALL:
+ 				return 9;
++			case CPU_SUBTYPE_ARM64E:
++				/*
++				 * negroniarm64e=1: accept arm64e on this PAuth-less host. The
++				 * code was rewritten offline (tools/ios18/pacstrip.py) so it
++				 * contains no PAC instruction; preferred below a real arm64
++				 * slice, which keeps fat iOS 16 binaries on their arm64 slice.
++				 */
++				if (negroni_arm64e_enabled()) {
++					return 8;
++				}
++				break;
+ 			}
+ 			break;
+ 
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index 884fb7a..8e1edec 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -401,6 +401,35 @@ LCK_MTX_DECLARE_ATTR(proc_list_mlock, &proc_mlock_grp, &proc_lck_attr);
+ #if XNU_TARGET_OS_OSX
+ /* hook called after root is mounted XXX temporary hack */
+ void (*mountroot_post_hook)(void);
++
++/*
++ * NEGRONI: boot-arg negronilsreset=1 deletes the LaunchServices database before
++ * launchd starts, so lsd re-seeds it. A database seeded while the extension
++ * catalog was unreadable (before patch 0099) is reused as "seeded" forever
++ * and keeps every app extension ignored (no wallpapers; see
++ * docs/EXTENSION_POINTS_2.md). Goes through HFS+ and its journal, unlike
++ * editing the partition from a recovery. One-shot: drop the boot-arg after.
++ */
++extern int unlink1(vfs_context_t, vnode_t, user_addr_t, enum uio_seg, int);
++
++static void
++negroni_ls_reset(void)
++{
++	static const char *const paths[] = {
++		"/private/var/mobile/Containers/Data/InternalDaemon/3ED48A87-B795-429E-9BCB-E3502EA1A6EC/Library/Caches/com.apple.LaunchServices-4035-v2.csstore",
++		"/private/var/mobile/Containers/Data/InternalDaemon/3ED48A87-B795-429E-9BCB-E3502EA1A6EC/Library/Caches/com.apple.LaunchServices-4035-v2.csstore-journal",
++	};
++	uint32_t on = 0;
++
++	if (!PE_parse_boot_argn("negronilsreset", &on, sizeof(on)) || on != 1) {
++		return;
++	}
++	for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
++		int error = unlink1(vfs_context_kernel(), NULLVP, CAST_USER_ADDR_T(paths[i]),
++		    UIO_SYSSPACE, 0);
++		printf("NEGRONI LS: unlink %s -> %d\n", paths[i], error);
++	}
++}
+ void (*unmountroot_pre_hook)(void);
+ #endif
+ void set_rootvnode(vnode_t);
+@@ -1049,6 +1078,8 @@ bsd_init(void)
+ 	bsd_init_kprintf("calling siginit\n");
+ 	siginit(kernproc);
+ 
++	negroni_ls_reset();
++
+ 	bsd_init_kprintf("calling bsd_utaskbootstrap\n");
+ 	bsd_utaskbootstrap();
+ 
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index c29554f..d0172f2 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -105,6 +105,9 @@
+ #include <sys/sysproto.h>
+ #include <sys/sysctl.h>
+ #include <sys/persona.h>
++#if defined(ARM64_BOARD_CONFIG_NEGRONI)
++void negroni_exec_delay(const char *leaf);         /* bsd/kern/negroni_amfi.c */
++#endif
+ #include <sys/reason.h>
+ #if SYSV_SHM
+ #include <sys/shm_internal.h>           /* shmexec() */
+@@ -1291,6 +1294,13 @@ grade:
+ 	    imgp->ip_endargv - imgp->ip_startargv);
+ 	AUDIT_ARG(envv, imgp->ip_endargv, imgp->ip_envc,
+ 	    imgp->ip_endenvv - imgp->ip_endargv);
++#if defined(ARM64_BOARD_CONFIG_NEGRONI)
++	/* bsd/kern/negroni_amfi.c, boot-arg negroniexecdelay (containermanagerd waits for usermanagerd) */
++	if (imgp->ip_startargv != NULL && imgp->ip_endargv != NULL) {
++		const char *leaf = strrchr(imgp->ip_startargv, '/');
++		negroni_exec_delay(leaf != NULL ? leaf + 1 : imgp->ip_startargv);
++	}
++#endif
+ 
+ 
+ 
+@@ -5889,6 +5899,33 @@ is_arm64e_running_as_arm64(const struct image_params *imgp)
+ }
+ #endif /* __has_feature(ptrauth_calls) */
+ 
++/*
++ * Boot-arg negroniarm64e=1: run iOS 18 arm64e userland on this CPU, which has no
++ * pointer authentication (docs/IOS18_PORT.md). Everything it enables is keyed
++ * on the Mach-O CPU subtype being arm64e, so arm64 (iOS 16) processes are
++ * unaffected: grade_binary() accepts arm64e (bsd/dev/arm/kern_machdep.c),
++ * exec tells dyld "ptrauth_disabled=1" (below) and the AMFI "AMFI" policy
++ * answers dyld's policy query (negroni_amfi.c). The binaries themselves are
++ * rewritten offline to contain no PAC instructions (tools/ios18/pacstrip.py).
++ */
++bool
++negroni_arm64e_enabled(void)
++{
++	static int state = -1;
++	if (state < 0) {
++		uint32_t v = 0;
++		state = PE_parse_boot_argn("negroniarm64e", &v, sizeof(v)) && v != 0;
++	}
++	return state > 0;
++}
++
++bool
++negroni_proc_is_arm64e(struct proc *p)
++{
++	return p != PROC_NULL && p->p_cputype == CPU_TYPE_ARM64 &&
++	       (p->p_cpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E;
++}
++
+ _Atomic uint64_t libmalloc_experiment_factors = 0;
+ 
+ static int
+@@ -6106,6 +6143,23 @@ exec_add_apple_strings(struct image_params *imgp,
+ #endif /* __has_feature(ptrauth_calls) */
+ 
+ 
++#if !__has_feature(ptrauth_calls)
++	/*
++	 * negroniarm64e=1: an arm64e binary on a CPU without PAuth. Same string a
++	 * ptrauth kernel passes when it disables the JOP keys; dyld then also
++	 * accepts arm64 slices for the process (GradedArchs keysOff).
++	 */
++	if (negroni_arm64e_enabled() &&
++	    (imgp->ip_origcpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E) {
++		error = exec_add_user_string(imgp, CAST_USER_ADDR_T("ptrauth_disabled=1"), UIO_SYSSPACE, FALSE);
++		if (error) {
++			goto bad;
++		}
++
++		imgp->ip_applec++;
++	}
++#endif /* !__has_feature(ptrauth_calls) */
++
+ #if __has_feature(ptrauth_calls) && defined(XNU_TARGET_OS_OSX)
+ 	{
+ 		char dyld_abi_string[strlen(DYLD_ARM64E_ABI_KEY) + 8];
+diff --git a/bsd/kern/kern_mib.c b/bsd/kern/kern_mib.c
+index bf1e584..f0ee57b 100644
+--- a/bsd/kern/kern_mib.c
++++ b/bsd/kern/kern_mib.c
+@@ -117,6 +117,9 @@ extern vm_map_t bsd_pageable_map;
+ #include <machine/config.h>
+ #include <machine/machine_routines.h>
+ #include <machine/cpu_capabilities.h>
++#if defined(__arm64__)
++#include <arm/cpu_capabilities_public.h>      /* CAP_BIT_* (hw.optional.arm.caps) */
++#endif
+ 
+ #include <mach/mach_host.h>             /* for host_info() */
+ 
+@@ -1112,6 +1115,27 @@ SECURITY_READ_ONLY_LATE(int) gARM_FEAT_FP16 = 0;
+ SECURITY_READ_ONLY_LATE(int) gARM_FEAT_SSBS = 0;
+ SECURITY_READ_ONLY_LATE(int) gARM_FEAT_BTI = 0;
+ 
++/*
++ * Features that xnu-11215 exports but that xnu-8796 never probes. None of them
++ * exist on any CPU this kernel runs on (WFxT/RPRES/AFP are ARMv8.7, SME is
++ * Apple M4/A18), so they stay 0; they only need to exist so that
++ * hw.optional.arm.FEAT_* lookups by iOS 18 userland succeed with "absent"
++ * instead of ENOENT.
++ */
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_WFxT = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_RPRES = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_AFP = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_SME = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_SME2 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_SME_F64F64 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_FEAT_SME_I16I64 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_SME_F32F32 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_SME_BI32I32 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_SME_B16F32 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_SME_F16F32 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_SME_I8I32 = 0;
++SECURITY_READ_ONLY_LATE(int) gARM_SME_I16I32 = 0;
++
+ SECURITY_READ_ONLY_LATE(int) gUCNormalMem = 0;
+ 
+ #if defined (__arm64__)
+@@ -1193,6 +1217,21 @@ SECURITY_READ_ONLY_LATE(int) gARM_FP_SyncExceptions = 0;
+ SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_SSBS, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_SSBS, 0, "");
+ SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_BTI, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_BTI, 0, "");
+ 
++/* xnu-11215 additions (always 0 on this hardware) */
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_WFxT, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_WFxT, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_RPRES, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_RPRES, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_AFP, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_AFP, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_SME, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_SME, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_SME2, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_SME2, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_SME_F64F64, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_SME_F64F64, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, FEAT_SME_I16I64, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FEAT_SME_I16I64, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, SME_F32F32, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_SME_F32F32, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, SME_BI32I32, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_SME_BI32I32, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, SME_B16F32, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_SME_B16F32, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, SME_F16F32, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_SME_F16F32, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, SME_I8I32, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_SME_I8I32, 0, "");
++SYSCTL_INT(_hw_optional_arm, OID_AUTO, SME_I16I32, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_SME_I16I32, 0, "");
++
+ /* Features from FPCR. */
+ SYSCTL_INT(_hw_optional_arm, OID_AUTO, FP_SyncExceptions, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, &gARM_FP_SyncExceptions, 0, "");
+ 
+@@ -1240,6 +1279,102 @@ SYSCTL_INT(_hw_optional, OID_AUTO, arm64, CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LO
+ #endif /* ! __arm64__ */
+ 
+ 
++#if defined (__arm64__)
++
++/*
++ * hw.optional.arm.caps (as in xnu-11215): one bit per FEAT, bit positions from
++ * <arm/cpu_capabilities_public.h> (CAP_BIT_*, ABI shared with clang and dyld).
++ * Read once by dyld (ProcessConfig::evaluateProcessorSpecificFunctionVariantFlags)
++ * to pick function variants; if the sysctl is missing dyld gets 0 flags, which
++ * does not even include the "default" variant.
++ *
++ * The gARM_* flags are filled at boot from ID_AA64{ISAR0,ISAR1,PFR0,PFR1,MMFR0,
++ * MMFR2}_EL1 by commpage_init_arm_optional_features_*() so only features the CPU
++ * really implements are reported.
++ */
++static int
++sysctl_hw_caps(__unused struct sysctl_oid *oidp, __unused void *arg1,
++    __unused int arg2, struct sysctl_req *req)
++{
++	/* Local buffer, one bit per FEAT, reset to 0, set if FEAT present. */
++	#define CAP_BYTE_NB ((CAP_BIT_NB + 7) / 8)
++	uint8_t feats[CAP_BYTE_NB] = {0};
++
++	/* Write a bit in the local buffer. */
++	#define CAP_DO_SET_BIT(n) { \
++	        assert((n) < CAP_BIT_NB); \
++	        const uint32_t word_id = ((uint32_t) (n)) >> 3; \
++	        assert(word_id < CAP_BYTE_NB); \
++	        const uint8_t bit_id = ((uint32_t) (n)) & 0x7; \
++	        feats[word_id] |= ((uint8_t) 1) << bit_id; \
++	}
++
++	/* Write a capability bit in the local buffer. */
++	#define CAP_SET_BIT_(var, name) \
++	if (var) { \
++	        CAP_DO_SET_BIT(CAP_BIT_##name); \
++	}
++	#define CAP_SET_BIT(name) CAP_SET_BIT_(gARM_##name, name)
++
++	/* Report presence of all FEATs. */
++	CAP_SET_BIT_(gARMv8Crc32, CRC32);
++	CAP_SET_BIT(FEAT_FlagM);
++	CAP_SET_BIT(FEAT_FlagM2);
++	CAP_SET_BIT(FEAT_FHM);
++	CAP_SET_BIT(FEAT_DotProd);
++	CAP_SET_BIT(FEAT_SHA3);
++	CAP_SET_BIT(FEAT_RDM);
++	CAP_SET_BIT(FEAT_LSE);
++	CAP_SET_BIT(FEAT_SHA256);
++	CAP_SET_BIT(FEAT_SHA512);
++	CAP_SET_BIT(FEAT_SHA1);
++	CAP_SET_BIT(FEAT_AES);
++	CAP_SET_BIT(FEAT_PMULL);
++	CAP_SET_BIT(FEAT_SPECRES);
++	CAP_SET_BIT(FEAT_SB);
++	CAP_SET_BIT(FEAT_FRINTTS);
++	CAP_SET_BIT(FEAT_LRCPC);
++	CAP_SET_BIT(FEAT_LRCPC2);
++	CAP_SET_BIT(FEAT_FCMA);
++	CAP_SET_BIT(FEAT_JSCVT);
++	CAP_SET_BIT(FEAT_PAuth);
++	CAP_SET_BIT(FEAT_PAuth2);
++	CAP_SET_BIT(FEAT_FPAC);
++	CAP_SET_BIT(FEAT_DPB);
++	CAP_SET_BIT(FEAT_DPB2);
++	CAP_SET_BIT(FEAT_BF16);
++	CAP_SET_BIT(FEAT_I8MM);
++	CAP_SET_BIT(FEAT_WFxT);
++	CAP_SET_BIT(FEAT_RPRES);
++	CAP_SET_BIT(FEAT_ECV);
++	CAP_SET_BIT(FEAT_AFP);
++	CAP_SET_BIT(FEAT_LSE2);
++	CAP_SET_BIT(FEAT_CSV2);
++	CAP_SET_BIT(FEAT_CSV3);
++	CAP_SET_BIT(FEAT_DIT);
++	CAP_SET_BIT(AdvSIMD);
++	CAP_SET_BIT(AdvSIMD_HPFPCvt);
++	CAP_SET_BIT(FEAT_FP16);
++	CAP_SET_BIT(FEAT_SSBS);
++	CAP_SET_BIT(FEAT_BTI);
++	CAP_SET_BIT(FEAT_SME);
++	CAP_SET_BIT(FEAT_SME2);
++	CAP_SET_BIT(SME_F32F32);
++	CAP_SET_BIT(SME_BI32I32);
++	CAP_SET_BIT(SME_B16F32);
++	CAP_SET_BIT(SME_F16F32);
++	CAP_SET_BIT(SME_I8I32);
++	CAP_SET_BIT(SME_I16I32);
++	CAP_SET_BIT(FEAT_SME_F64F64);
++	CAP_SET_BIT(FEAT_SME_I16I64);
++
++	/* Write the local buffer to userspace and complete. */
++	return SYSCTL_OUT(req, feats, CAP_BYTE_NB);
++}
++SYSCTL_PROC(_hw_optional_arm, OID_AUTO, caps, CTLTYPE_QUAD | CTLFLAG_RD | CTLFLAG_KERN | CTLFLAG_LOCKED, 0, 0, sysctl_hw_caps, "Q", "");
++#endif /* __arm64__ */
++
++
+ #if defined(__arm64__) && defined(CONFIG_XNUPOST)
+ /**
+  * Test whether the new values for a few hw.optional sysctls matches the legacy
+diff --git a/bsd/kern/kern_sysctl.c b/bsd/kern/kern_sysctl.c
+index 3bf1d27..cca27fa 100644
+--- a/bsd/kern/kern_sysctl.c
++++ b/bsd/kern/kern_sysctl.c
+@@ -5925,3 +5925,47 @@ sysctl_page_protection_type SYSCTL_HANDLER_ARGS
+ SYSCTL_PROC(_kern, OID_AUTO, page_protection_type,
+     CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED,
+     0, 0, sysctl_page_protection_type, "I", "Type of page protection that the system supports");
++
++/*
++ * iOS 18 (xnu-11215) userland queries the Exclaves state with sysctlbyname().
++ * apfs_boot_util (mount-phase-2, graft_exclaveos) does
++ *     sysctlbyname("kern.exclaves_status") -> failure: "failed to get exclaves
++ *     status", returns errno, and the boot task aborts ("ExclaveOS graft");
++ *     == 0xFF (EXCLAVES_STATUS_NOT_SUPPORTED): skip the ExclaveOS graft, success;
++ *     == 1 (EXCLAVES_STATUS_AVAILABLE): graft the ExclaveOS cryptex;
++ *     anything else: EINVAL-like failure ("invalid exclaves status").
++ * This kernel has no exclaves, so answer what xnu-11215 answers when it is
++ * built without CONFIG_EXCLAVES (as for A12 and older): exclaves_get_status()
++ * == EXCLAVES_STATUS_NOT_SUPPORTED and exclaves_get_boot_stage() ==
++ * EXCLAVES_BOOT_STAGE_NONE.
++ *
++ * kern.exclaves_relaxed_requirements and kern.exclaves_inspection_status are
++ * only defined under CONFIG_EXCLAVES in xnu-11215; they stay absent (ENOENT),
++ * which callers treat as "no requirement relaxed".
++ */
++#define NEGRONI_EXCLAVES_STATUS_NOT_SUPPORTED     0xFF
++#define NEGRONI_EXCLAVES_BOOT_STAGE_NONE          (~0u)
++
++static int
++sysctl_exclaves_status SYSCTL_HANDLER_ARGS
++{
++#pragma unused(oidp, arg1, arg2)
++	int value = NEGRONI_EXCLAVES_STATUS_NOT_SUPPORTED;
++	return sysctl_io_number(req, value, sizeof(value), NULL, NULL);
++}
++
++SYSCTL_PROC(_kern, OID_AUTO, exclaves_status,
++    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED,
++    0, 0, sysctl_exclaves_status, "I", "Running status of Exclaves");
++
++static int
++sysctl_exclaves_boot_stage SYSCTL_HANDLER_ARGS
++{
++#pragma unused(oidp, arg1, arg2)
++	int value = (int)NEGRONI_EXCLAVES_BOOT_STAGE_NONE;
++	return sysctl_io_number(req, value, sizeof(value), NULL, NULL);
++}
++
++SYSCTL_PROC(_kern, OID_AUTO, exclaves_boot_stage,
++    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED,
++    0, 0, sysctl_exclaves_boot_stage, "I", "Boot stage of Exclaves");
+diff --git a/bsd/kern/negroni_amfi.c b/bsd/kern/negroni_amfi.c
+index 5b08efb..b11a56d 100644
+--- a/bsd/kern/negroni_amfi.c
++++ b/bsd/kern/negroni_amfi.c
+@@ -35,6 +35,9 @@
+ #include <sys/systm.h>
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode.h>
++#include <machine/atomic.h>
++#include <pexpert/pexpert.h>
++#include <kern/clock.h>
+ #include <security/mac_policy.h>
+ 
+ /* iokit/Kernel/arm/NegroniEntitlements.cpp */
+@@ -284,7 +287,32 @@ negroni_amfi_vnode_check_signature(struct vnode *vp, __unused struct label *labe
+  * data (container paths) fail with ENOENT; extension tokens: op 5 below. The first
+  * use of each operation number is logged.
+  */
+-static uint64_t negroni_sandbox_seen;
++static uint64_t negroni_sandbox_seen[4];
++
++/*
++ * Op 0x43, sandbox_get_container_expected(bool *a, bool *b) (identical in
++ * iOS 16.7 and 18.7 libsystem_sandbox, disassembled): __sandbox_ms("Sandbox",
++ * 0x43, args) with args = { uint64_t *out_a, uint64_t *out_b }, both outputs
++ * pre-zeroed by the caller; the library returns -1 if the syscall fails and
++ * otherwise *a = (out_a != 0), *b = (out_b != 0). _container_init() (libSystem
++ * initializer in iOS 18) aborts on -1 ("sandbox_get_container_expected()
++ * failed: -1") and, on success with a == 0, skips container setup: that is
++ * the right answer for a process with no sandbox container. ENOENT, the old
++ * answer, only worked for iOS 16 because its caller reaches the call rarely.
++ */
++static int
++negroni_sandbox_container_expected(user_addr_t arg)
++{
++	user_addr_t out[2];
++	uint64_t zero = 0;
++	int error = copyin(arg, out, sizeof(out));
++	for (int i = 0; error == 0 && i < 2; i++) {
++		if (out[i] != 0) {
++			error = copyout(&zero, out[i], sizeof(zero));
++		}
++	}
++	return error;
++}
+ 
+ /*
+  * Op 4, container path of a pid (ios-sailfish 0110): arg -> { int64 pid; 0;
+@@ -366,11 +394,11 @@ negroni_sandbox_extension_issue(user_addr_t arg)
+ static int
+ negroni_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ {
+-	if (call >= 0 && call < 64 && !(negroni_sandbox_seen & (1ULL << call))) {
+-		negroni_sandbox_seen |= 1ULL << call;
++	if (call >= 0 && call < 256 && !(negroni_sandbox_seen[call / 64] & (1ULL << (call % 64)))) {
++		negroni_sandbox_seen[call / 64] |= 1ULL << (call % 64);
+ 		char name[32];
+ 		proc_name(proc_pid(p), name, sizeof(name));
+-		printf("NEGRONI Sandbox: %s op %d\n", name, call);
++		printf("NEGRONI Sandbox: %s op %d (0x%x)\n", name, call, call);
+ 	}
+ 	switch (call) {
+ 	case 4:         /* container path (pid) */
+@@ -380,7 +408,7 @@ negroni_sandbox_syscall(struct proc *p, int call, user_addr_t arg)
+ 	case 6:         /* extension consume */
+ 		return negroni_sandbox_extensions ? 0 : ENOENT;
+ 	case 0x43:      /* container expected */
+-		return ENOENT;
++		return negroni_sandbox_container_expected(arg);
+ 	default:
+ 		return 0;
+ 	}
+@@ -614,3 +642,61 @@ negroni_amfi_policy_register(void)
+ 	    error ? "NOT registered" : "registered", error);
+ }
+ #endif /* ARM64_BOARD_CONFIG_NEGRONI */
++
++/*
++ * Start-up race between containermanagerd and usermanagerd (docs: NOTES.md 2026-10-21, logarchive pull 1021-1927).
++ * launchd starts both at once (RunAtLoad). containermanagerd's first action is to fetch the persona list from
++ * usermanagerd's XPC service; usermanagerd needs far longer than 1 s to get from exec to its check-in here, and
++ * launchd answers a lookup of a running-but-not-checked-in service with "failed activation ... error = 37"
++ * (launch_service: pid != 0 -> EALREADY), which the client sees as NSCocoaErrorDomain 4097 / XPC_INTERRUPTED.
++ * MCM retries for ~1 s (35 attempts between 775.80 and 776.71 in the archive), then serves with no personas:
++ * every client lookup ends in container error 52 (XPC_INTERRUPTED_REPLY; backboardd, lsd, mobileactivationd ...).
++ * Delay the FIRST exec of the processes named in boot-arg negroniexecdelay ("name:ms,name:ms", default
++ * "containermanagerd:6000", "-" = off) so usermanagerd is up first. Runs in the exec'ing thread before the image
++ * is activated; matched on the argv[0] leaf (containermanagerd_system is a different name).
++ */
++void negroni_exec_delay(const char *leaf);
++
++void
++negroni_exec_delay(const char *leaf)
++{
++	static char spec[128];
++	static int parsed;
++	static uint32_t done_mask;
++	if (!parsed) {
++		if (!PE_parse_boot_argn("negroniexecdelay", spec, sizeof(spec))) {
++			strlcpy(spec, "containermanagerd:6000", sizeof(spec));
++		}
++		parsed = 1;
++	}
++	if (spec[0] == '-' || leaf == NULL) {
++		return;
++	}
++	size_t n = strlen(leaf);
++	int idx = 0;
++	for (const char *t = spec; *t; idx++) {
++		const char *end = strchr(t, ',');
++		size_t tl = end ? (size_t)(end - t) : strlen(t);
++		const char *colon = memchr(t, ':', tl);
++		if (colon != NULL && (size_t)(colon - t) == n && strncmp(t, leaf, n) == 0 && idx < 32 &&
++		    !(done_mask & (1U << idx))) {
++			uint32_t ms = 0;
++			for (const char *d = colon + 1; d < t + tl && *d >= '0' && *d <= '9'; d++) {
++				ms = ms * 10 + (uint32_t)(*d - '0');
++			}
++			done_mask |= 1U << idx;
++			if (ms > 60000) {
++				ms = 60000;
++			}
++			printf("NEGRONI EXEC: delaying first exec of %s by %u ms (usermanagerd must check in first)\n", leaf, ms);
++			delay_for_interval(ms, 1000 * 1000);
++			printf("NEGRONI EXEC: %s continues\n", leaf);
++			return;
++		}
++		if (!end) {
++			break;
++		}
++		t = end + 1;
++	}
++}
++
+diff --git a/iokit/Kernel/arm/NegroniBusy.cpp b/iokit/Kernel/arm/NegroniBusy.cpp
+new file mode 100644
+index 0000000..df76f28
+--- /dev/null
++++ b/iokit/Kernel/arm/NegroniBusy.cpp
+@@ -0,0 +1,54 @@
++/*
++ * After ios-topaz 0127 (MakrSas/ios-topaz): boot-arg negronibusy=N prints, N seconds after the framebuffer starts and every
++ * 30 s after, every IOService that is still busy. configd (InterfaceNamer) waits for IOKit to
++ * quiesce before it names network interfaces, and everyone who lists interfaces waits for that.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(NEGRONI)
++#include <IOKit/IOLib.h>
++#include <IOKit/IOService.h>
++#include <IOKit/IORegistryEntry.h>
++#include <kern/thread.h>
++#include <pexpert/pexpert.h>
++
++static uint32_t negroni_busy_secs;
++
++static void
++negroni_busy_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	IOSleep(negroni_busy_secs * 1000);
++	for (int round = 0; round < 10; round++) {
++		unsigned busy = 0;
++		IORegistryIterator *it = IORegistryIterator::iterateOver(gIOServicePlane, kIORegistryIterateRecursively);
++		if (it != NULL) {
++			IORegistryEntry *e;
++			while ((e = it->getNextObject()) != NULL) {
++				IOService *s = OSDynamicCast(IOService, e);
++				if (s != NULL && s->getBusyState() != 0) {
++					busy++;
++					IOLog("NEGRONI BUSY: %s <%s> busy %u\n", s->getName(), s->getMetaClass()->getClassName(), (unsigned)s->getBusyState());
++				}
++			}
++			it->release();
++		}
++		IOLog("NEGRONI BUSY: round %d: %u busy services\n", round, busy);
++		IOSleep(30000);
++	}
++	thread_terminate(current_thread());
++}
++
++extern "C" void
++negroni_busy_init(void)
++{
++	thread_t thread;
++	if (!PE_parse_boot_argn("negronibusy", &negroni_busy_secs, sizeof(negroni_busy_secs)) || negroni_busy_secs == 0) {
++		return;
++	}
++	if (kernel_thread_start(negroni_busy_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++#else
++extern "C" void negroni_busy_init(void) {}
++#endif
+diff --git a/iokit/Kernel/arm/NegroniFramebuffer.cpp b/iokit/Kernel/arm/NegroniFramebuffer.cpp
+index cee8ada..072aa89 100644
+--- a/iokit/Kernel/arm/NegroniFramebuffer.cpp
++++ b/iokit/Kernel/arm/NegroniFramebuffer.cpp
+@@ -149,6 +149,7 @@
+ #include "NegroniGPU.h"
+ 
+ extern "C" int negroni_console_muted;     /* osfmk/console/serial_console.c */
++extern "C" void negroni_busy_init(void);          /* iokit/Kernel/arm/NegroniBusy.cpp (boot-arg negronibusy=N) */
+ extern "C" char negroni_gpu_badge[24];   /* bsd/dev/negroni_adreno.c */
+ extern "C" uint32_t negroni_gpu_badge_color;
+ extern "C" uint32_t negroni_gpu_ui_swaps;       /* bsd/dev/negroni_adreno.c (0286): the GPU DCVS UI floor */
+@@ -938,6 +939,7 @@ AppleCLCD::start(IOService *provider)
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
++	negroni_busy_init();
+ 	PE_current_console(&video);
+ 	fPhys = video.v_baseAddr;
+ 	fWidth = (uint32_t)video.v_width;
+@@ -3398,7 +3400,7 @@ AppleCLCD::present(const uint8_t *rec, NegroniSurface *const *held, const uint32
+ 		uint64_t last = (uint64_t)s->offset + (uint64_t)(sy + h - 1) * s->bytesPerRow +
+ 		    (uint64_t)(sx + w) * 4;
+ 		bool fits = !(w <= 0 || h <= 0 || s->elementWidth != 1 || s->elementHeight != 1 ||
+-		    s->memory == NULL || last > s->memory->getLength());
++		    s->memory == NULL || last + s->wrapDelta > s->memory->getLength());
+ 		if (!fits) {
+ 			src = 0;
+ 		}
+@@ -4524,12 +4526,33 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		break;
+ 	case kNegroniFBSwapEnd: {
+ 		uint8_t rec[NEGRONI_FB_SWAP_REC_SIZE];
+-		if (args->structureInputDescriptor != NULL ||
+-		    args->structureInputSize < NEGRONI_FB_SWAP_REC_SIZE) {
++		/*
++		 * iOS 18 IOMobileFramebuffer sends a 0x514 byte record (client+0x18) whose fields sit 0x48 bytes later than
++		 * the iOS 16 record this driver was written for (read from IOMobileFramebufferSwapSetLayer/SwapBegin):
++		 *   +0x98 swap id, +0x9c + 4*i surface id, +0xac + 16*i source rect (x, y, w, h), +0x10c + 16*i dest rect,
++		 *   +0x15c + 4*i layer flags; there is no layer mask (a layer is in use when its surface id != 0).
++		 * Translate into the legacy layout (id 0x50/0x54, rects 0x64/0xc4, mask 0x104) so nothing else changes.
++		 * Without this every swap looked empty (mask 0): backboardd presented 5000 frames and the panel stayed black.
++		 */
++		const uint8_t *in = (const uint8_t *)args->structureInput;
++		if (args->structureInputDescriptor != NULL || args->structureInputSize < 0x514) {
+ 			ret = kIOReturnBadArgument;
+ 			break;
+ 		}
+-		memcpy(rec, args->structureInput, sizeof(rec));
++		bzero(rec, sizeof(rec));
++		uint32_t lmask = 0;
++		memcpy(rec + 0x50, in + 0x98, 4);
++		for (uint32_t i = 0; i < 4; i++) {
++			uint32_t id;
++			memcpy(&id, in + 0x9c + 4 * i, 4);
++			memcpy(rec + 0x54 + 4 * i, &id, 4);
++			memcpy(rec + 0x64 + 16 * i, in + 0xac + 16 * i, 16);
++			memcpy(rec + 0xc4 + 16 * i, in + 0x10c + 16 * i, 16);
++			if (id != 0) {
++				lmask |= 1u << i;
++			}
++		}
++		memcpy(rec + 0x104, &lmask, 4);
+ 		fFB->layersOwner(this, false);  /* 0398 */
+ 		fFB->swap(rec);
+ 		break;
+diff --git a/iokit/Kernel/arm/NegroniSurface.cpp b/iokit/Kernel/arm/NegroniSurface.cpp
+index 363f330..6e91373 100644
+--- a/iokit/Kernel/arm/NegroniSurface.cpp
++++ b/iokit/Kernel/arm/NegroniSurface.cpp
+@@ -39,6 +39,12 @@
+  * canvas-sized BGRA framebuffers are placed in display slots of the splash
+  * region instead of kernel memory, mapped cached in the kernel and in
+  * backboardd; the framebuffer cleans the rows the CPU wrote before it shows one.
++ * After ios-topaz 0133: values (9/10/11) live in a dictionary per surface, their
++ * seed and size in the state page (+0x20/+0x28); bulk attachments (27: colour
++ * space, transfer function...) are kept at +0x30 of the state page, where the
++ * framework reads them; purgeability (20), accelerator binding (12) and the
++ * YCbCr matrix (5) are remembered. Notifications, ownership and timestamps
++ * are accepted and ignored (logged once per selector).
+  */
+ #include "NegroniSurface.h"
+ #include "NegroniGPU.h"
+@@ -54,14 +60,23 @@
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSNumber.h>
+ #include <libkern/c++/OSUnserialize.h>
++#include <libkern/c++/OSSerialize.h>
++#include <libkern/c++/OSString.h>
+ #include <sys/proc.h>
+ #include <pexpert/pexpert.h>
+ 
+ enum {
+ 	kNegroniSurfaceCreate             = 0,
+ 	kNegroniSurfaceLookup             = 4,
++	kNegroniSurfaceSetYCbCrMatrix     = 5,
+ 	kNegroniSurfaceWrapClientImage    = 6,
+ 	kNegroniSurfaceWrapClientMemory   = 7,
++	kNegroniSurfaceSetValue           = 9,
++	kNegroniSurfaceCopyValue          = 10,
++	kNegroniSurfaceRemoveValue        = 11,
++	kNegroniSurfaceBindAccel          = 12,
++	kNegroniSurfaceSetPurgeable       = 20,
++	kNegroniSurfaceSetBulkAttachments = 27,
+ 	kNegroniSurfaceLimits             = 13,
+ 	kNegroniSurfaceLookupFromPort     = 34,
+ 	kNegroniSurfaceCreatePort         = 35,
+@@ -76,7 +91,7 @@ enum {
+ 	kNegroniSurfaceTrapReleaseFailed  = 5,
+ };
+ 
+-#define NEGRONI_SURFACE_RESULT_SIZE       0xa68
++#define NEGRONI_SURFACE_RESULT_SIZE       0xc68   /* iOS 18: 0x88 header + 20 planes * 0x98 */
+ #define NEGRONI_SURFACE_MAX_ID            4096
+ #define NEGRONI_SURFACE_MAX_DIM           16384
+ #define NEGRONI_SURFACE_MAX_ALLOC         (256u << 20)
+@@ -84,6 +99,12 @@ enum {
+ #define NEGRONI_SURFACE_ROW_ALIGN         64
+ #define NEGRONI_SURFACE_TIMESTAMPS        0x800   /* offset in the state page */
+ #define NEGRONI_SURFACE_STATE_SEED        0xc     /* u32 in the state page */
++#define NEGRONI_SURFACE_STATE_ACCEL       0x8     /* u16 accelerator id, u16 sub id */
++#define NEGRONI_SURFACE_STATE_VSEED       0x20    /* u32 values seed */
++#define NEGRONI_SURFACE_STATE_YCBCR       0x24    /* u32 */
++#define NEGRONI_SURFACE_STATE_VSIZE       0x28    /* u32 room the values need when fetched, 0: none */
++#define NEGRONI_SURFACE_STATE_BULK        0x30    /* 0x70 bytes of bulk attachments */
++#define NEGRONI_SURFACE_BULK_SIZE         0x70
+ #define kIOSurfaceLockReadOnly          0x1
+ 
+ static IOLock       *negroni_surface_lock;
+@@ -203,8 +224,9 @@ NegroniSurface::free()
+ 		save = NULL;
+ 	}
+ 	OSSafeReleaseNULL(kernelMap);
++	OSSafeReleaseNULL(values);
+ 	if (wrapped && memory != NULL) {
+-		memory->complete();     /* unwire the client's pages (negroni_surface_wrap_task_memory) */
++		memory->complete();
+ 	}
+ 	OSSafeReleaseNULL(memory);
+ 	OSSafeReleaseNULL(state);
+@@ -223,7 +245,7 @@ NegroniSurface::kernelAddress()
+ 		kernelMap = memory->map(kernelMapCache != 0 ? kernelMapCache : kIOMapWriteCombineCache);
+ 	}
+ 	IOLockUnlock(negroni_surface_lock);
+-	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() : 0;
++	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() + wrapDelta : 0;
+ }
+ 
+ #define NEGRONI_SURFACE_STATE_IN_USE    0x18    /* u64 in the state page */
+@@ -488,6 +510,8 @@ negroni_dict_u32(OSDictionary *dict, const char *key, uint32_t def)
+ 	return n != NULL ? n->unsigned32BitValue() : def;
+ }
+ 
++static IOReturn negroni_surface_use_task_memory(NegroniSurface *s, task_t task, uint64_t address, uint64_t size);
++
+ static uint32_t
+ negroni_div_up(uint32_t a, uint32_t b)
+ {
+@@ -582,8 +606,9 @@ public:
+ 	IOMemoryMap  *data;
+ 	IOMemoryMap  *state;
+ 	uint32_t      count;
++	bool          detached;     /* trap 4 seen: the framework is releasing this view */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { detached = false; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ };
+ 
+@@ -636,12 +661,15 @@ class IOSurfaceRootUserClient : public IOUserClient {
+ 	task_t   fTask;
+ 	IOLock  *fLock;
+ 	OSArray *fRefs;
++	OSArray *fZombies;      /* state-page mappings of released views, oldest first */
+ 
+-	NegroniSurfaceRef *findRef(uint32_t id, unsigned int *index);
++	NegroniSurfaceRef *findRef(uint32_t id, unsigned int *index, bool detached = false);
+ 	IOReturn addRef(NegroniSurface *s, NegroniSurfaceRef **refOut, bool *existing);
+ 	IOReturn returnSurface(NegroniSurface *s, IOExternalMethodArguments *args);
+ 	IOReturn create(IOExternalMethodArguments *args);
+ 	IOReturn wrapClient(uint32_t selector, IOExternalMethodArguments *args);
++	IOReturn valueCall(uint32_t selector, IOExternalMethodArguments *args);
++	IOReturn bulkAttachments(IOExternalMethodArguments *args);
+ 
+ public:
+ 	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
+@@ -656,6 +684,8 @@ public:
+ 	IOReturn trapLock(void *id, void *options, void *seedOut, void *, void *, void *);
+ 	IOReturn trapUnlock(void *id, void *options, void *seedOut, void *, void *, void *);
+ 	IOReturn trapRelease(void *id, void *, void *, void *, void *, void *);
++	IOReturn trapDetach(void *id, void *, void *, void *, void *, void *);
++	IOReturn dropView(uint32_t id, bool detachedFirst);
+ };
+ 
+ OSDefineMetaClassAndStructors(IOSurfaceRootUserClient, IOUserClient);
+@@ -684,13 +714,15 @@ IOSurfaceRootUserClient::initWithTask(task_t owningTask, void *securityID, UInt3
+ 	fTask = owningTask;
+ 	fLock = IOLockAlloc();
+ 	fRefs = OSArray::withCapacity(16);
+-	return fLock != NULL && fRefs != NULL;
++	fZombies = OSArray::withCapacity(16);
++	return fLock != NULL && fRefs != NULL && fZombies != NULL;
+ }
+ 
+ void
+ IOSurfaceRootUserClient::free()
+ {
+ 	OSSafeReleaseNULL(fRefs);
++	OSSafeReleaseNULL(fZombies);
+ 	if (fLock != NULL) {
+ 		IOLockFree(fLock);
+ 		fLock = NULL;
+@@ -703,6 +735,9 @@ IOSurfaceRootUserClient::clientClose(void)
+ {
+ 	IOLockLock(fLock);
+ 	fRefs->flushCollection();
++	if (fZombies != NULL) {
++		fZombies->flushCollection();
++	}
+ 	IOLockUnlock(fLock);
+ 	terminate();
+ 	return kIOReturnSuccess;
+@@ -710,11 +745,11 @@ IOSurfaceRootUserClient::clientClose(void)
+ 
+ /* Lock held. */
+ NegroniSurfaceRef *
+-IOSurfaceRootUserClient::findRef(uint32_t id, unsigned int *index)
++IOSurfaceRootUserClient::findRef(uint32_t id, unsigned int *index, bool detached)
+ {
+ 	for (unsigned int i = 0; i < fRefs->getCount(); i++) {
+ 		NegroniSurfaceRef *ref = (NegroniSurfaceRef *)fRefs->getObject(i);
+-		if (ref->surface->id == id) {
++		if (ref->surface->id == id && ref->detached == detached) {
+ 			if (index != NULL) {
+ 				*index = i;
+ 			}
+@@ -795,52 +830,49 @@ put64(uint8_t *p, uint32_t off, uint64_t v)
+ }
+ 
+ /*
+- * Plane bytesPerRow (patch 0390, boot-arg negronisurf_planebpr, default 1). IOSurface.framework 20H392
+- * reads plane i of the lock result at 0x68 + i * 0x80 (IOSurfaceClient + 0xd0 + i * 0x80): +0x00 width,
+- * +0x04 height, +0x0c offset, +0x10 bytesPerRow (IOSurfaceClientGetBytesPerRowOfPlane: ldr [x8, #0xe0]),
+- * +0x14 size, +0x18 bytesPerElement, +0x1a/+0x1b element width/height, +0x54 compression type (1 =
+- * compressed: the base address and bytesPerRow getters answer 0). 0046 wrote bytesPerRow at +0x08, which
+- * nothing reads, so IOSurfaceGetBytesPerRowOfPlane and CVPixelBufferGetBytesPerRowOfPlane answered 0 for
+- * every plane of every surface: the camera plug-in wrote every row of its 420f frames over row 0, Metal
+- * read YCbCr planes with rows 0 apart, H264SW decoded with a stride of 0. negronisurf_planebpr=0 puts
+- * the old layout back (kill switch).
+- * (negroni_surface_plane_bpr_at, set in IOCoreSurfaceRoot::start.)
++ * IOSurface.framework's lock result. iOS 18 (22H352) copies it to IOSurfaceClient + 0x70 (iOS 16: + 0x68), layout read from
++ * the client getters (IOSurfaceClientGet*):
++ *   0x00 base address    0x08 state page   0x10 timestamps (5 x u64)   0x18 id (u32)
++ *   0x20 allocSize u64   0x28 width u64    0x30 height u64   0x38 bytesPerRow u64   0x40 offset (added to the base) u64
++ *   0x48 pixelFormat u32 0x58 planeCount u32  0x60 bytesPerElement u16  0x62 elementWidth u8  0x63 elementHeight u8
++ *   0x64 cacheMode u32   0x70 parentID u32    0x74 slice count (u32, <= 1 means 1)
++ *   0x88 + i * 0x98: plane i: +0 width u64, +8 height u64, +0x18 offset u64, +0x20 bytesPerRow u64, +0x28 size u64,
++ *                    +0x30 bytesPerElement u16, +0x32 elementWidth u8, +0x33 elementHeight u8, +0x6c u8 compressed flag
++ * The iOS 16 layout put 32-bit fields at 0x1c.., so the client read width/height/rowbytes as garbage and CoreUI wrote
++ * past the surface (SpringBoard SIGSEGV in vImageDeepmap2Decode, destination = base + bytesPerElement).
+  */
+-
+-/* IOSurface.framework's lock result (copied to IOSurfaceClient + 0x68). */
+ static void
+ negroni_surface_fill_result(NegroniSurface *s, NegroniSurfaceRef *ref, uint8_t *out)
+ {
+ 	bzero(out, NEGRONI_SURFACE_RESULT_SIZE);
+-	put64(out, 0x00, ref->data->getAddress());
++	put64(out, 0x00, ref->data->getAddress() + s->wrapDelta);
+ 	put64(out, 0x08, ref->state->getAddress());
+ 	put64(out, 0x10, ref->state->getAddress() + NEGRONI_SURFACE_TIMESTAMPS);
+ 	put32(out, 0x18, s->id);
+-	put32(out, 0x1c, s->allocSize);
+-	put32(out, 0x20, s->width);
+-	put32(out, 0x24, s->height);
+-	put32(out, 0x28, s->bytesPerRow);
+-	put32(out, 0x2c, s->offset);
+-	put32(out, 0x30, s->pixelFormat);
+-	put32(out, 0x34, s->allocSize);
+-	put32(out, 0x38, s->planeCount);
+-	memcpy(out + 0x40, &s->bytesPerElement, 2);
+-	out[0x42] = s->elementWidth;
+-	out[0x43] = s->elementHeight;
+-	put32(out, 0x44, s->cacheMode);
+-	put32(out, 0x50, s->parentID);
+-	put32(out, 0x54, 1);
+-	for (uint32_t i = 0; i < s->planeCount; i++) {
+-		uint8_t *p = out + 0x68 + i * 0x80;
++	put64(out, 0x20, s->allocSize);
++	put64(out, 0x28, s->width);
++	put64(out, 0x30, s->height);
++	put64(out, 0x38, s->bytesPerRow);
++	put64(out, 0x40, s->offset);
++	put32(out, 0x48, s->pixelFormat);
++	put32(out, 0x58, s->planeCount);
++	memcpy(out + 0x60, &s->bytesPerElement, 2);
++	out[0x62] = s->elementWidth;
++	out[0x63] = s->elementHeight;
++	put32(out, 0x64, s->cacheMode);
++	put32(out, 0x70, s->parentID);
++	put32(out, 0x74, 1);
++	for (uint32_t i = 0; i < s->planeCount && i < 20; i++) {
++		uint8_t *p = out + 0x88 + i * 0x98;
+ 		const struct negroni_surface_plane *pl = &s->planes[i];
+-		put32(p, 0x00, pl->width);
+-		put32(p, 0x04, pl->height);
+-		put32(p, negroni_surface_plane_bpr_at, pl->bytesPerRow);
+-		put32(p, 0x0c, pl->offset);
+-		put32(p, 0x14, pl->size);
+-		memcpy(p + 0x18, &pl->bytesPerElement, 2);
+-		p[0x1a] = pl->elementWidth;
+-		p[0x1b] = pl->elementHeight;
++		put64(p, 0x00, pl->width);
++		put64(p, 0x08, pl->height);
++		put64(p, 0x18, pl->offset);
++		put64(p, 0x20, pl->bytesPerRow);
++		put64(p, 0x28, pl->size);
++		memcpy(p + 0x30, &pl->bytesPerElement, 2);
++		p[0x32] = pl->elementWidth;
++		p[0x33] = pl->elementHeight;
+ 	}
+ }
+ 
+@@ -886,7 +918,7 @@ IOSurfaceRootUserClient::returnSurface(NegroniSurface *s, IOExternalMethodArgume
+ 	}
+ 	if (ret != kIOReturnSuccess && !existing) {
+ 		/* The caller never learns the id: undo this create/lookup. */
+-		trapRelease((void *)(uintptr_t)s->id, NULL, NULL, NULL, NULL, NULL);
++		dropView(s->id, false);
+ 	}
+ 	return ret;
+ }
+@@ -960,7 +992,40 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 				ret = kIOReturnNoResources;
+ 			}
+ 		}
+-	} else if (ret == kIOReturnSuccess) {
++	}
++	/*
++	 * IOSurfaceAddress (ios-topaz 0134/0135/0139): a surface around memory the
++	 * creator already has. Clients that make their pictures into surfaces so
++	 * (icons, layer contents) got fresh zeroed memory otherwise: every picture
++	 * was a transparent square. The memory is as big as its owner says
++	 * (IOSurfaceAllocSize), else as the layout needs. It is published here:
++	 * the buffer branch below only runs for surfaces that still need memory,
++	 * and unpublished surfaces all had id 0 (the framework took them for one
++	 * surface and releasing any unmapped the views of the others).
++	 */
++	OSNumber *client_address = OSDynamicCast(OSNumber, props->getObject("IOSurfaceAddress"));
++	if (ret == kIOReturnSuccess && client_address != NULL) {
++		uint64_t used = (uint64_t)s->offset + (uint64_t)s->bytesPerRow * negroni_div_up(s->height, s->elementHeight);
++		for (uint32_t i = 0; i < s->planeCount; i++) {
++			if ((uint64_t)s->planes[i].offset + s->planes[i].size > used) {
++				used = (uint64_t)s->planes[i].offset + s->planes[i].size;
++			}
++		}
++		uint64_t owned = negroni_dict_u32(props, "IOSurfaceAllocSize", 0);
++		if (owned != 0) {
++			used = owned;
++		}
++		ret = negroni_surface_use_task_memory(s, fTask, client_address->unsigned64BitValue(), used);
++		if (ret == kIOReturnSuccess && !negroni_surface_publish(s)) {
++			ret = kIOReturnNoResources;
++		}
++		static uint32_t told;
++		if (told++ < 6) {
++			IOLog("NEGRONI SURF: create around client memory %#llx (%llu bytes) %ux%u fmt 0x%x -> 0x%x\n",
++			    client_address->unsigned64BitValue(), used, s->width, s->height, s->pixelFormat, ret);
++		}
++	}
++	if (ret == kIOReturnSuccess && s->memory == NULL) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&negroni_surface_wired) +
+ 		    s->allocSize <= NEGRONI_SURFACE_WIRED_MAX &&
+@@ -996,23 +1061,233 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	return ret;
+ }
+ 
++/* The structure input of a call, wherever it came (inline or a descriptor), copied. Free with IOFreeData. */
++static uint8_t *
++negroni_struct_in(IOExternalMethodArguments *args, uint32_t *len)
++{
++	uint8_t *copy;
++
++	if (args->structureInputDescriptor != NULL) {
++		*len = (uint32_t)args->structureInputDescriptor->getLength();
++	} else {
++		*len = args->structureInputSize;
++	}
++	if (*len == 0 || *len > NEGRONI_SURFACE_MAX_PROPS || (copy = (uint8_t *)IOMallocData(*len)) == NULL) {
++		return NULL;
++	}
++	if (args->structureInputDescriptor != NULL) {
++		args->structureInputDescriptor->readBytes(0, copy, *len);
++	} else {
++		memcpy(copy, args->structureInput, *len);
++	}
++	return copy;
++}
++
++static uint32_t *
++negroni_state32(NegroniSurface *s, uint32_t offset)
++{
++	return (uint32_t *)((uint8_t *)s->state->getBytesNoCopy() + offset);
++}
++
++/* After a change of the values: a new (odd) seed and the room a fetch of all of them needs. Lock held. */
++static void
++negroni_values_changed(NegroniSurface *s)
++{
++	uint32_t size = 0;
++
++	if (s->values != NULL && s->values->getCount() != 0) {
++		OSSerialize *ser = OSSerialize::binaryWithCapacity(4096);
++		if (ser != NULL && s->values->serialize(ser)) {
++			size = ser->getLength() + 8;
++		}
++		OSSafeReleaseNULL(ser);
++	}
++	*negroni_state32(s, NEGRONI_SURFACE_STATE_VSEED) = (*negroni_state32(s, NEGRONI_SURFACE_STATE_VSEED) + 2) | 1;
++	*negroni_state32(s, NEGRONI_SURFACE_STATE_VSIZE) = size;
++}
++
++static IOReturn
++negroni_reply_seed(IOExternalMethodArguments *args, uint32_t seed)
++{
++	if (args->structureOutput != NULL && args->structureOutputSize >= sizeof(seed)) {
++		memcpy(args->structureOutput, &seed, sizeof(seed));
++		args->structureOutputSize = sizeof(seed);
++	}
++	return kIOReturnSuccess;
++}
++
++/*
++ * Values. Requests start with the surface id (8 bytes). SetValue: then a
++ * serialized array, [value, key] or [dictionary of them all]. RemoveValue and
++ * CopyValue: then a key, NUL-terminated (empty: all). Changes answer the new
++ * seed; CopyValue answers 4 unused bytes, the seed, the serialized value.
++ */
++IOReturn
++IOSurfaceRootUserClient::valueCall(uint32_t selector, IOExternalMethodArguments *args)
++{
++	uint32_t len = 0, id, seed = 0;
++	uint8_t *in = negroni_struct_in(args, &len);
++	IOReturn ret = kIOReturnBadArgument;
++	NegroniSurface *s;
++	OSSerialize *ser = NULL;
++	uint32_t length = 0;
++
++	if (in == NULL) {
++		return kIOReturnBadArgument;
++	}
++	if (len < 9 || (selector != kNegroniSurfaceSetValue && in[len - 1] != 0)) {
++		IOFreeData(in, len);
++		return kIOReturnBadArgument;
++	}
++	memcpy(&id, in, sizeof(id));
++	s = negroni_surface_copy(id);
++	if (s == NULL) {
++		IOFreeData(in, len);
++		return kIOReturnNotFound;
++	}
++	OSObject *obj = selector == kNegroniSurfaceSetValue ? OSUnserializeXML((const char *)in + 8, len - 8) : NULL;
++	IOLockLock(negroni_surface_lock);
++	if (s->values == NULL) {
++		s->values = OSDictionary::withCapacity(4);
++	}
++	if (s->values == NULL) {
++		ret = kIOReturnNoMemory;
++	} else if (selector == kNegroniSurfaceSetValue) {
++		OSArray *array = OSDynamicCast(OSArray, obj);
++		OSString *key = array != NULL ? OSDynamicCast(OSString, array->getObject(1)) : NULL;
++		OSDictionary *all = array != NULL ? OSDynamicCast(OSDictionary, array->getObject(0)) : NULL;
++		if (array != NULL && array->getCount() == 2 && key != NULL && array->getObject(0) != NULL) {
++			s->values->setObject(key, array->getObject(0));
++			ret = kIOReturnSuccess;
++		} else if (array != NULL && array->getCount() == 1 && all != NULL) {
++			s->values->merge(all);
++			ret = kIOReturnSuccess;
++		}
++		if (ret == kIOReturnSuccess) {
++			negroni_values_changed(s);
++		}
++	} else if (selector == kNegroniSurfaceRemoveValue) {
++		const char *key = (const char *)in + 8;
++		if (key[0] == 0) {
++			s->values->flushCollection();
++		} else {
++			s->values->removeObject(key);
++		}
++		negroni_values_changed(s);
++		ret = kIOReturnSuccess;
++	} else {
++		const char *key = (const char *)in + 8;
++		OSObject *value = key[0] != 0 ? s->values->getObject(key) : s->values;
++		ret = kIOReturnSuccess;
++		if (value != NULL && (key[0] != 0 || s->values->getCount() != 0)) {
++			ser = OSSerialize::binaryWithCapacity(4096);
++			if (ser == NULL || !value->serialize(ser)) {
++				ret = kIOReturnNoMemory;
++			} else {
++				length = ser->getLength();
++			}
++		}
++	}
++	seed = *negroni_state32(s, NEGRONI_SURFACE_STATE_VSEED);
++	IOLockUnlock(negroni_surface_lock);
++	OSSafeReleaseNULL(obj);
++	IOFreeData(in, len);
++
++	if (ret == kIOReturnSuccess && selector == kNegroniSurfaceCopyValue) {
++		uint32_t header[2] = { 0, seed }, total = (uint32_t)sizeof(header) + length;
++		if (args->structureOutputDescriptor != NULL) {
++			IOMemoryDescriptor *out = args->structureOutputDescriptor;
++			if (out->getLength() < total) {
++				ret = kIOReturnNoSpace;
++			} else if ((ret = out->prepare()) == kIOReturnSuccess) {
++				out->writeBytes(0, header, sizeof(header));
++				if (length != 0) {
++					out->writeBytes(sizeof(header), ser->text(), length);
++				}
++				out->complete();
++				args->structureOutputDescriptorSize = total;
++			}
++		} else if (args->structureOutput == NULL || args->structureOutputSize < total) {
++			ret = kIOReturnNoSpace;
++		} else {
++			memcpy(args->structureOutput, header, sizeof(header));
++			if (length != 0) {
++				memcpy((uint8_t *)args->structureOutput + sizeof(header), ser->text(), length);
++			}
++			args->structureOutputSize = total;
++		}
++	} else if (ret == kIOReturnSuccess) {
++		negroni_reply_seed(args, seed);
++	}
++	OSSafeReleaseNULL(ser);
++	s->release();
++	return ret;
++}
++
++/*
++ * Bulk attachments (colour space, transfer function, ...): 0x70 bytes, then at
++ * +0x70 their size, +0x78 a mask of the fields that changed, +0x80 the surface
++ * id. The fields, by their bit, are these byte ranges of the 0x70.
++ */
++IOReturn
++IOSurfaceRootUserClient::bulkAttachments(IOExternalMethodArguments *args)
++{
++	static const uint8_t field[15][2] = {
++		{ 0x00, 0x20 }, { 0x20, 0x30 }, { 0x30, 0x38 }, { 0x38, 0x39 }, { 0x39, 0x3a }, { 0x3a, 0x3b }, { 0x3b, 0x3c },
++		{ 0x3c, 0x3d }, { 0x3d, 0x3e }, { 0x3e, 0x3f }, { 0x3f, 0x40 }, { 0x40, 0x58 }, { 0x58, 0x5c }, { 0x5c, 0x64 },
++		{ 0x64, 0x65 },
++	};
++	uint32_t len = 0, id;
++	uint64_t size, mask;
++	uint8_t *in = negroni_struct_in(args, &len);
++	NegroniSurface *s;
++
++	if (in == NULL || len < 0x84) {
++		if (in != NULL) {
++			IOFreeData(in, len);
++		}
++		return kIOReturnBadArgument;
++	}
++	memcpy(&size, in + 0x70, 8);
++	memcpy(&mask, in + 0x78, 8);
++	memcpy(&id, in + 0x80, 4);
++	if (size > NEGRONI_SURFACE_BULK_SIZE || (s = negroni_surface_copy(id)) == NULL) {
++		IOFreeData(in, len);
++		return size > NEGRONI_SURFACE_BULK_SIZE ? kIOReturnBadArgument : kIOReturnNotFound;
++	}
++	uint8_t *bulk = (uint8_t *)s->state->getBytesNoCopy() + NEGRONI_SURFACE_STATE_BULK;
++	IOLockLock(negroni_surface_lock);
++	for (unsigned i = 0; i < 15; i++) {
++		if ((mask & (1ull << i)) && field[i][1] <= size) {
++			memcpy(bulk + field[i][0], in + field[i][0], field[i][1] - field[i][0]);
++		}
++	}
++	IOLockUnlock(negroni_surface_lock);
++	IOFreeData(in, len);
++	s->release();
++	return kIOReturnSuccess;
++}
++
++
+ /*
+- * Make s's pixels the memory task already has at address (size bytes, page-aligned): the
+- * range is prepared (wired) for as long as the surface lives, as the GPU host import (0232)
+- * does, and every task that looks the surface up maps those same pages. Writable if the pages
+- * are; a picture that is only shown may be read-only (a mapped file). Cached in the kernel
+- * and in user mappings: the CPU wrote the pixels, and NegroniFramebuffer / NegroniGPU clean
+- * cached surfaces (kernelMapCache) before the display engine or the GPU reads them.
++ * Make s's pixels the memory a task has already at address (size bytes): the
++ * range is prepared (wired) for as long as the surface lives, and every task
++ * that looks the surface up maps those same pages. Writable if it can be; a
++ * picture that is only shown may be read-only memory.
+  */
+ static IOReturn
+-negroni_surface_wrap_task_memory(NegroniSurface *s, task_t task, uint64_t address, uint64_t size)
++negroni_surface_use_task_memory(NegroniSurface *s, task_t task, uint64_t address, uint64_t size)
+ {
+-	uint64_t length = round_page_64(size);
++	if (address == 0 || size == 0 || size > NEGRONI_SURFACE_MAX_ALLOC) {
++		return kIOReturnBadArgument;
++	}
++	uint64_t first = trunc_page_64(address);
++	uint64_t length = round_page_64(address + size) - first;
+ 	IOMemoryDescriptor *md = NULL;
+ 	IOReturn held = kIOReturnNoMemory;
+ 	for (int attempt = 0; attempt < 2 && held != kIOReturnSuccess; attempt++) {
+ 		OSSafeReleaseNULL(md);
+-		md = IOMemoryDescriptor::withAddressRange(address, length,
++		md = IOMemoryDescriptor::withAddressRange(first, length,
+ 		    attempt == 0 ? kIODirectionInOut : kIODirectionOut, task);
+ 		held = md != NULL ? md->prepare() : kIOReturnNoMemory;
+ 	}
+@@ -1024,38 +1299,26 @@ negroni_surface_wrap_task_memory(NegroniSurface *s, task_t task, uint64_t addres
+ 	s->wrapped = true;
+ 	s->mapCache = kIOMapDefaultCache;
+ 	s->kernelMapCache = kIOMapCopybackCache;
++	s->wrapDelta = (uint32_t)(address - first);
+ 	return kIOReturnSuccess;
+ }
+ 
+ /*
+- * IOSurfaceClientWrapClientImage (sel 6; iOS 16.7 IOSurface.framework, out/gpu/re/IOSurface.s:
+- * struct in of 0x20 bytes: +0 address, +8 width, +0xc height, +0x10 pixel format, +0x14 bytes
+- * per element (the framework derives it from the format), +0x18 bytes per row, +0x1c one more
+- * u32 the framework passes through) and IOSurfaceClientWrapClientMemory (sel 7: scalars
+- * address, size): a surface made of the caller's own memory, answered like a created one
+- * (lock result: pixels, state page, id, seed). CoreAnimation's GL renderer wraps page-aligned
+- * CPU images so (CA::Render::Image::retain_iosurface). A zeroed success answer here gave the
+- * framework a client with id 0 and no state page: backboardd SIGSEGV far 0x30 in
+- * IOSurfaceClientGetBulkAttachments (docs/notes.md 15a). Input the driver cannot use is
+- * refused (not success): the framework then returns NULL and its callers take their other path.
++ * IOSurfaceWrapClientImage (6: struct of 0x20 bytes: +0 address, +8 width,
++ * +0xc height, +0x10 pixel format, +0x14 bytes per element, +0x18 bytes per
++ * row) and IOSurfaceWrapClientMemory (7: scalars address, size): a surface
++ * made of the caller's own memory (ios-topaz 0132).
+  */
+ IOReturn
+ IOSurfaceRootUserClient::wrapClient(uint32_t selector, IOExternalMethodArguments *args)
+ {
+-	static uint32_t failed_logged;          /* one line per failure kind */
+-	static uint32_t done_logged;            /* one line per selector */
+ 	uint64_t address, size;
+ 	uint32_t width, height, format = 0, bpe, bpr;
+-	const char *why = NULL;
+-	uint32_t kind = 0;
+-	IOReturn ret = kIOReturnUnsupported;
+ 
+ 	if (selector == kNegroniSurfaceWrapClientImage) {
+ 		const uint8_t *in = (const uint8_t *)args->structureInput;
+ 		if (in == NULL || args->structureInputSize < 0x1c) {
+-			why = "bad input size";
+-			kind = 1;
+-			goto fail;
++			return kIOReturnBadArgument;
+ 		}
+ 		memcpy(&address, in, 8);
+ 		memcpy(&width, in + 0x08, 4);
+@@ -1063,18 +1326,20 @@ IOSurfaceRootUserClient::wrapClient(uint32_t selector, IOExternalMethodArguments
+ 		memcpy(&format, in + 0x10, 4);
+ 		memcpy(&bpe, in + 0x14, 4);
+ 		memcpy(&bpr, in + 0x18, 4);
+-		if (width == 0 || height == 0 || width > NEGRONI_SURFACE_MAX_DIM || height > NEGRONI_SURFACE_MAX_DIM ||
+-		    bpe == 0 || bpe > 64 || (uint64_t)bpr < (uint64_t)width * bpe) {
+-			why = "bad image geometry";
+-			kind = 2;
+-			goto fail;
++		if (width == 0 || height == 0 || bpe == 0 || bpe > 16 || bpr < (uint64_t)width * bpe) {
++			static uint32_t told;
++			if (told++ < 6) {
++				uint32_t w[8] = { 0 };
++				memcpy(w, in, sizeof(w) <= args->structureInputSize ? sizeof(w) : args->structureInputSize);
++				IOLog("NEGRONI SURF: wrap image refused: %08x %08x | %08x %08x %08x %08x %08x %08x (%u bytes)\n",
++				    w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], args->structureInputSize);
++			}
++			return kIOReturnBadArgument;
+ 		}
+ 		size = (uint64_t)bpr * height;
+ 	} else {
+ 		if (args->scalarInputCount < 2) {
+-			why = "bad scalar count";
+-			kind = 1;
+-			goto fail;
++			return kIOReturnBadArgument;
+ 		}
+ 		address = args->scalarInput[0];
+ 		size = args->scalarInput[1];
+@@ -1083,76 +1348,40 @@ IOSurfaceRootUserClient::wrapClient(uint32_t selector, IOExternalMethodArguments
+ 		bpe = 1;
+ 		bpr = (uint32_t)size;
+ 	}
+-	if (address == 0 || size == 0 || size > NEGRONI_SURFACE_MAX_ALLOC || size > UINT32_MAX) {
+-		why = "bad address or size";
+-		kind = 3;
+-		goto fail;
++	if (address == 0 || size == 0 || size > NEGRONI_SURFACE_MAX_ALLOC) {
++		return kIOReturnBadArgument;
+ 	}
+-	if (address != trunc_page_64(address)) {
+-		why = "address not page-aligned";
+-		kind = 4;
+-		goto fail;
++	NegroniSurface *s = negroni_surface_alloc();
++	if (s == NULL) {
++		return kIOReturnNoMemory;
+ 	}
+-	{
+-		NegroniSurface *s = negroni_surface_alloc();
+-		if (s == NULL) {
+-			why = "no memory";
+-			kind = 5;
+-			ret = kIOReturnNoMemory;
+-			goto fail;
+-		}
+-		char wname[32];
+-		proc_selfname(wname, sizeof(wname));
+-		if (!NegroniWiredAllow(round_page_64(size), wname, "client memory wrap")) {     /* 0399 */
+-			s->release();
+-			why = "over the wired memory guard (0399)";
+-			kind = 8;     /* 7 is "no free surface id" (one line per kind) */
+-			ret = kIOReturnNoMemory;
+-			goto fail;
+-		}
+-		ret = negroni_surface_wrap_task_memory(s, fTask, address, size);
+-		if (ret != kIOReturnSuccess) {
+-			s->release();
+-			why = "cannot wire the client range";
+-			kind = 6;
+-			goto fail;
+-		}
+-		s->width = width;
+-		s->height = height;
+-		s->pixelFormat = format;
+-		s->bytesPerElement = (uint16_t)bpe;
+-		s->elementWidth = 1;
+-		s->elementHeight = 1;
+-		s->bytesPerRow = bpr;
+-		s->offset = 0;
+-		s->allocSize = (uint32_t)round_page_64(size);
+-		s->planeCount = 0;
+-		if (!negroni_surface_publish(s)) {
+-			s->release();
+-			why = "no free surface id";
+-			kind = 7;
+-			ret = kIOReturnNoResources;
+-			goto fail;
+-		}
+-		if (!(done_logged & (1u << (selector & 31)))) {
+-			done_logged |= 1u << (selector & 31);
+-			char who[32];
+-			proc_selfname(who, sizeof(who));
+-			IOLog("NEGRONI SURF: wrap client memory sel %u: %ux%u bpr %u fmt 0x%x -> id %u (%s, %u bytes)\n",
+-			    selector, width, height, bpr, format, s->id, who, s->allocSize);
+-		}
+-		ret = returnSurface(s, args);    /* takes the creator's user count */
++	IOReturn wret = negroni_surface_use_task_memory(s, fTask, address, size);
++	if (wret != kIOReturnSuccess) {
+ 		s->release();
+-		return ret;
++		return wret;
+ 	}
+-fail:
+-	if (!(failed_logged & (1u << kind))) {
+-		failed_logged |= 1u << kind;
+-		char who[32];
+-		proc_selfname(who, sizeof(who));
+-		IOLog("NEGRONI SURF: wrap client memory sel %u refused: %s (%s, in %u bytes, %u scalars) -> 0x%x\n",
+-		    selector, why, who, args->structureInputSize, args->scalarInputCount, ret);
++	s->width = width;
++	s->height = height;
++	s->pixelFormat = format;
++	s->bytesPerElement = (uint16_t)bpe;
++	s->elementWidth = 1;
++	s->elementHeight = 1;
++	s->bytesPerRow = bpr;
++	s->allocSize = (uint32_t)size;
++	s->planeCount = 0;
++	if (!negroni_surface_publish(s)) {
++		s->release();
++		return kIOReturnNoResources;
+ 	}
++	static uint32_t logged;
++	if (logged < 8) {
++		logged++;
++		IOLog("NEGRONI SURF: wrap %s id %u %ux%u fmt 0x%x bpe %u bpr %u size %llu at +0x%x\n",
++		    selector == kNegroniSurfaceWrapClientImage ? "image" : "memory", s->id, width, height, format, bpe, bpr,
++		    size, s->wrapDelta);
++	}
++	IOReturn ret = returnSurface(s, args);  /* takes the creator's user count */
++	s->release();
+ 	return ret;
+ }
+ 
+@@ -1165,15 +1394,69 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 
+ 	switch (selector) {
+ 	case kNegroniSurfaceLimits: {
+-		uint8_t limits[0x18] = { 0 };
++		/*
++		 * iOS 16 asked for 0x18 bytes (version byte at 0x16). IOSurface.framework 22H352 asks for 0x28 bytes
++		 * and checks the u16 at 0x22 == 1, otherwise logs "IOSurface.framework versus IOSurface.kext version
++		 * mismatch" and closes the connection (every IOSurface create then fails: "IOSurface open failed").
++		 * Layout read from the client (_IOSurfaceClientGetPropertyAlignment / ...Maximum):
++		 *   +0x00 u32 alignment-1 for Offset / PlaneOffset / PlaneBase
++		 *   +0x04 u32 alignment-1 for BytesPerRow / PlaneBytesPerRow
++		 *   +0x08 u64 max BytesPerRow   +0x10 u64 max Width   +0x18 u64 max Height
++		 *   +0x20 u8 flag               +0x22 u16 version (1)
++		 */
++		uint8_t limits[0x28] = { 0 };
+ 		put32(limits, 0x0, NEGRONI_SURFACE_ROW_ALIGN - 1);
+ 		put32(limits, 0x4, NEGRONI_SURFACE_ROW_ALIGN - 1);
++		put64(limits, 0x08, 0x10000000ULL);
++		put64(limits, 0x10, 0x10000ULL);
++		put64(limits, 0x18, 0x10000ULL);
+ 		limits[0x16] = 1;
++		limits[0x22] = 1;
++		printf("NEGRONI SURF: limits sel 13 out %u desc %d\n", args->structureOutputSize,
++		    args->structureOutputDescriptor != NULL);
+ 		negroni_surf_log_once("sel", selector);
+-		return negroni_struct_out(args, limits, sizeof(limits));
++		return negroni_struct_out(args, limits,
++		    (args->structureOutputDescriptor == NULL && args->structureOutputSize < sizeof(limits)) ?
++		    args->structureOutputSize : (uint32_t)sizeof(limits));
+ 	}
+ 	case kNegroniSurfaceCreate:
+ 		return create(args);
++	case kNegroniSurfaceSetValue:
++	case kNegroniSurfaceCopyValue:
++	case kNegroniSurfaceRemoveValue:
++		negroni_surf_log_once("sel", selector);
++		return valueCall(selector, args);
++	case kNegroniSurfaceSetBulkAttachments:
++		negroni_surf_log_once("sel", selector);
++		return bulkAttachments(args);
++	case kNegroniSurfaceSetPurgeable:
++	case kNegroniSurfaceBindAccel:
++	case kNegroniSurfaceSetYCbCrMatrix: {
++		/* in: surface, state (out: the old one) / surface, accelerator, sub id / surface, matrix */
++		NegroniSurface *s = args->scalarInputCount >= 2 ? negroni_surface_copy((uint32_t)arg0) : NULL;
++		negroni_surf_log_once("sel", selector);
++		if (s == NULL) {
++			return args->scalarInputCount >= 2 ? kIOReturnNotFound : kIOReturnBadArgument;
++		}
++		IOLockLock(negroni_surface_lock);
++		if (selector == kNegroniSurfaceSetPurgeable) {
++			if (args->scalarOutputCount >= 1) {
++				args->scalarOutput[0] = s->purgeable;
++				args->scalarOutputCount = 1;
++			}
++			if (args->scalarInput[1] != 3) {        /* 3: only ask */
++				s->purgeable = (uint32_t)args->scalarInput[1];
++			}
++		} else if (selector == kNegroniSurfaceBindAccel && args->scalarInputCount >= 3) {
++			uint16_t accel[2] = { (uint16_t)args->scalarInput[1], (uint16_t)args->scalarInput[2] };
++			memcpy((uint8_t *)s->state->getBytesNoCopy() + NEGRONI_SURFACE_STATE_ACCEL, accel, sizeof(accel));
++		} else if (selector == kNegroniSurfaceSetYCbCrMatrix) {
++			*negroni_state32(s, NEGRONI_SURFACE_STATE_YCBCR) = (uint32_t)args->scalarInput[1];
++		}
++		IOLockUnlock(negroni_surface_lock);
++		s->release();
++		return kIOReturnSuccess;
++	}
+ 	case kNegroniSurfaceWrapClientImage:
+ 	case kNegroniSurfaceWrapClientMemory:
+ 		negroni_surf_log_once("sel", selector);
+@@ -1212,6 +1495,19 @@ IOSurfaceRootUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		return kIOReturnSuccess;
+ 	}
+ 	default:
++		/*
++		 * A call that answers with a lock result (child surfaces, anything this
++		 * driver does not implement) would hand IOSurface.framework a client made
++		 * of zeroes: no shared state (ios-topaz 0131: CoreAnimation's GL renderer
++		 * read its EDR factor there and crashed at 0x30). Refused, the framework
++		 * returns NULL and its callers take their other path.
++		 */
++		if ((args->structureOutputDescriptor != NULL &&
++		    args->structureOutputDescriptor->getLength() >= NEGRONI_SURFACE_RESULT_SIZE) ||
++		    (args->structureOutput != NULL && args->structureOutputSize >= NEGRONI_SURFACE_RESULT_SIZE)) {
++			negroni_surf_log_once("sel (refused: lock result)", selector);
++			return kIOReturnUnsupported;
++		}
+ 		/* Values, notifications, ownership, timestamps...: accept and ignore. */
+ 		for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
+ 			args->scalarOutput[i] = 0;
+@@ -1316,14 +1612,62 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	return ret;
+ }
+ 
++/*
++ * After ios-topaz 0135/0136: IOSurfaceClientRelease calls trap 4 and then trap 5
++ * for one release, 4 under the framework's cache lock. 4 only marks the view
++ * (the framework is about to drop it); 5 drops it. A lookup between the two
++ * must get a view of its own (not "you have it already", -1): trap 5 then
++ * takes the detached view away, not the new one. Releasing at both traps
++ * dropped two references and unmapped surfaces still in use (backboardd
++ * crashed in IOSurfaceClientGetSeed reading an unmapped state page).
++ */
++IOReturn
++IOSurfaceRootUserClient::trapDetach(void *id, void *, void *, void *, void *, void *)
++{
++	IOLockLock(fLock);
++	NegroniSurfaceRef *ref = findRef((uint32_t)(uintptr_t)id, NULL);
++	if (ref != NULL) {
++		ref->detached = true;
++	}
++	IOLockUnlock(fLock);
++	return kIOReturnSuccess;
++}
++
++#define NEGRONI_SURFACE_ZOMBIES   256
++
++/* Trap 5: drop the detached view of id (else the live one). */
+ IOReturn
+ IOSurfaceRootUserClient::trapRelease(void *id, void *, void *, void *, void *, void *)
++{
++	return dropView((uint32_t)(uintptr_t)id, true);
++}
++
++/* Drop one count of a view of id: the detached one first if asked, else only the live one. */
++IOReturn
++IOSurfaceRootUserClient::dropView(uint32_t id, bool detachedFirst)
+ {
+ 	unsigned int index;
+ 	IOLockLock(fLock);
+-	NegroniSurfaceRef *ref = findRef((uint32_t)(uintptr_t)id, &index);
++	NegroniSurfaceRef *ref = detachedFirst ? findRef(id, &index, true) : NULL;
++	if (ref == NULL) {
++		ref = findRef(id, &index);
++	}
+ 	if (ref != NULL && --ref->count == 0) {
+-		fRefs->removeObject(index);     /* unmaps and drops the user count */
++		/*
++		 * After ios-topaz 0137: the pixels are unmapped now, the read-only state
++		 * page stays mapped for the last 256 released views (16 KB each, oldest
++		 * first out): in backboardd another IOSurface object can still hold a
++		 * framework client of the same surface after this one is released, and
++		 * reading its seed from an unmapped page crashed. Unlike topaz this keeps
++		 * only the IOMemoryMap (which retains the state page), not the
++		 * NegroniSurfaceRef, so the pixel memory of the surface is freed at once.
++		 */
++		if (ref->state != NULL && fZombies != NULL && fZombies->setObject(ref->state)) {
++			if (fZombies->getCount() > NEGRONI_SURFACE_ZOMBIES) {
++				fZombies->removeObject(0);
++			}
++		}
++		fRefs->removeObject(index);     /* unmaps the pixels and drops the user count */
+ 	}
+ 	IOLockUnlock(fLock);
+ 	return ref != NULL ? kIOReturnSuccess : kIOReturnNotFound;
+@@ -1334,7 +1678,8 @@ static IOExternalTrap negroni_surface_traps[] = {
+ 	[kNegroniSurfaceTrapDecrementUse]  = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUseCount },
+ 	[kNegroniSurfaceTrapLock]          = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapLock },
+ 	[kNegroniSurfaceTrapUnlock]        = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapUnlock },
+-	[kNegroniSurfaceTrapRelease]       = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapRelease },
++	/* 4 only detaches (see trapDetach); 5 releases. */
++	[kNegroniSurfaceTrapRelease]       = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapDetach },
+ 	[kNegroniSurfaceTrapReleaseFailed] = { NULL, (IOTrap) & IOSurfaceRootUserClient::trapRelease },
+ };
+ 
+diff --git a/iokit/Kernel/arm/NegroniSurface.h b/iokit/Kernel/arm/NegroniSurface.h
+index 82e49c8..6ff9028 100644
+--- a/iokit/Kernel/arm/NegroniSurface.h
++++ b/iokit/Kernel/arm/NegroniSurface.h
+@@ -14,6 +14,7 @@
+ #include <IOKit/IOMemoryDescriptor.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ #include <libkern/c++/OSObject.h>
++#include <libkern/c++/OSDictionary.h>
+ #include <mach/mach_types.h>
+ 
+ #define NEGRONI_SURFACE_MAX_PLANES        20
+@@ -72,10 +73,14 @@ public:
+ 	 */
+ 	bool                      wrapped;
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { wrapped = false; return OSObject::init(); }
++	OSDictionary             *values;       /* IOSurfaceSetValue & co. (ios-topaz 0133) */
++	uint32_t                  purgeable;    /* IOSurfaceSetPurgeable state */
++	uint32_t                  wrapDelta;    /* wrapped client memory: where it starts in its first page */
++
++	bool init() APPLE_KEXT_OVERRIDE { values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ 
+-	/* Kernel address of the pixels (mapped on first use), or 0. */
++	/* Kernel address of the pixels (mapped on first use; wrapped memory: of the first pixel), or 0. */
+ 	uintptr_t kernelAddress();
+ };
+ 
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index a71527d..c6f28eb 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -10,6 +10,7 @@ iokit/Kernel/arm/AppleARMSMP.cpp    					optional iokitcpp
+ iokit/Kernel/arm/NegroniPlatformExpert.cpp                         optional iokitcpp
+ 
+ iokit/Kernel/arm/NegroniCPU.cpp                                    optional iokitcpp
++iokit/Kernel/arm/NegroniBusy.cpp                                   optional iokitcpp
+ iokit/Kernel/arm/NegroniEntitlements.cpp                           optional iokitcpp
+ iokit/Kernel/arm/NegroniKeyStore.cpp                               optional iokitcpp
+ iokit/Kernel/arm/NegroniAMFI.cpp                                   optional iokitcpp
+diff --git a/osfmk/arm/Makefile b/osfmk/arm/Makefile
+index 7900ccc..3179739 100644
+--- a/osfmk/arm/Makefile
++++ b/osfmk/arm/Makefile
+@@ -11,6 +11,7 @@ ARM_HEADER_FILES =	\
+ 		atomic.h \
+ 		cpu_number.h \
+ 		cpu_capabilities.h	\
++		cpu_capabilities_public.h	\
+ 		cpu_x86_64_capabilities.h	\
+ 		cpuid.h \
+ 		cpuid_internal.h \
+@@ -31,7 +32,8 @@ INSTALL_SF_MD_LCL_LIST = arch.h cpu_capabilities.h
+ 
+ # Headers installed into /usr/include (public and internal SDKs).
+ # These are covered by ../../bsd/machine/machine.modulemap.
+-INSTALL_MD_LIST = arch.h
++INSTALL_MD_LIST = arch.h \
++		cpu_capabilities_public.h
+ 
+ # Headers installed into /usr/local/include (internal SDK only).
+ # These are covered by ../../bsd/machine/machine_private.modulemap.
+diff --git a/osfmk/arm/cpu_capabilities_public.h b/osfmk/arm/cpu_capabilities_public.h
+new file mode 100644
+index 0000000..beafa5a
+--- /dev/null
++++ b/osfmk/arm/cpu_capabilities_public.h
+@@ -0,0 +1,111 @@
++/*
++ * Copyright (c) 2007 Apple Inc. All rights reserved.
++ *
++ * @APPLE_OSREFERENCE_LICENSE_HEADER_START@
++ *
++ * This file contains Original Code and/or Modifications of Original Code
++ * as defined in and that are subject to the Apple Public Source License
++ * Version 2.0 (the 'License'). You may not use this file except in
++ * compliance with the License. The rights granted to you under the License
++ * may not be used to create, or enable the creation or redistribution of,
++ * unlawful or unlicensed copies of an Apple operating system, or to
++ * circumvent, violate, or enable the circumvention or violation of, any
++ * terms of an Apple operating system software license agreement.
++ *
++ * Please obtain a copy of the License at
++ * http://www.opensource.apple.com/apsl/ and read it before using this file.
++ *
++ * The Original Code and all software distributed under the License are
++ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
++ * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
++ * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
++ * Please see the License for the specific language governing rights and
++ * limitations under the License.
++ *
++ * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
++ */
++
++#ifndef _ARM_CPU_CAPABILITIES_PUBLIC_H
++#define _ARM_CPU_CAPABILITIES_PUBLIC_H
++
++
++
++/*
++ * In order to reduce the number of sysctls require for a process to get
++ * the full list of supported processor capabilities extensions, the
++ * hw.optional.arm.caps sysctl generates a bit buffer with each bit representing
++ * the presence (1) or absence (0) of a given FEAT extension.
++ */
++
++#define HW_OPTIONAL_ARM_CAPS
++
++/*
++ * Clang needs those bits to remain constant.
++ * Existing entries should never be updated as they are ABI.
++ * Adding new entries to the end and bumping CAP_BIT_NB is okay.
++ */
++
++#define CAP_BIT_FEAT_FlagM          0
++#define CAP_BIT_FEAT_FlagM2         1
++#define CAP_BIT_FEAT_FHM            2
++#define CAP_BIT_FEAT_DotProd        3
++#define CAP_BIT_FEAT_SHA3           4
++#define CAP_BIT_FEAT_RDM            5
++#define CAP_BIT_FEAT_LSE            6
++#define CAP_BIT_FEAT_SHA256         7
++#define CAP_BIT_FEAT_SHA512         8
++#define CAP_BIT_FEAT_SHA1           9
++#define CAP_BIT_FEAT_AES            10
++#define CAP_BIT_FEAT_PMULL          11
++#define CAP_BIT_FEAT_SPECRES        12
++#define CAP_BIT_FEAT_SB             13
++#define CAP_BIT_FEAT_FRINTTS        14
++#define CAP_BIT_FEAT_LRCPC          15
++#define CAP_BIT_FEAT_LRCPC2         16
++#define CAP_BIT_FEAT_FCMA           17
++#define CAP_BIT_FEAT_JSCVT          18
++#define CAP_BIT_FEAT_PAuth          19
++#define CAP_BIT_FEAT_PAuth2         20
++#define CAP_BIT_FEAT_FPAC           21
++#define CAP_BIT_FEAT_DPB            22
++#define CAP_BIT_FEAT_DPB2           23
++#define CAP_BIT_FEAT_BF16           24
++#define CAP_BIT_FEAT_I8MM           25
++#define CAP_BIT_FEAT_WFxT           26
++#define CAP_BIT_FEAT_RPRES          27
++#define CAP_BIT_FEAT_ECV            28
++#define CAP_BIT_FEAT_AFP            29
++#define CAP_BIT_FEAT_LSE2           30
++#define CAP_BIT_FEAT_CSV2           31
++#define CAP_BIT_FEAT_CSV3           32
++#define CAP_BIT_FEAT_DIT            33
++#define CAP_BIT_FEAT_FP16           34
++#define CAP_BIT_FEAT_SSBS           35
++#define CAP_BIT_FEAT_BTI            36
++
++
++/* SME */
++#define CAP_BIT_FEAT_SME            40
++#define CAP_BIT_FEAT_SME2           41
++#define CAP_BIT_FEAT_SME_F64F64     42
++#define CAP_BIT_FEAT_SME_I16I64     43
++/* 5  bits left after SME. */
++
++#define CAP_BIT_AdvSIMD             49
++#define CAP_BIT_AdvSIMD_HPFPCvt     50
++#define CAP_BIT_CRC32               51
++
++#define CAP_BIT_SME_F32F32          52
++#define CAP_BIT_SME_BI32I32         53
++#define CAP_BIT_SME_B16F32          54
++#define CAP_BIT_SME_F16F32          55
++#define CAP_BIT_SME_I8I32           56
++#define CAP_BIT_SME_I16I32          57
++
++
++
++/* Total number of FEAT bits. */
++#define CAP_BIT_NB 64
++
++#endif /* _ARM_CPU_CAPABILITIES_PUBLIC_H */
+diff --git a/osfmk/arm64/negroni_fjcvtzs.h b/osfmk/arm64/negroni_fjcvtzs.h
+new file mode 100644
+index 0000000..cd70523
+--- /dev/null
++++ b/osfmk/arm64/negroni_fjcvtzs.h
+@@ -0,0 +1,139 @@
++/*
++ * NEGRONI (Poco F1, SDM845 Kryo 385 = ARMv8.2): software FJCVTZS (ARMv8.3-JSCVT).
++ *
++ * iOS 18's JavaScriptCore/WebCore use FJCVTZS Wd, Dn (0x1E7E0000 | Rn << 5 | Rd)
++ * unconditionally in a few hundred places; this CPU raises an undefined
++ * instruction exception for it. sleh.c (handle_uncategorized) emulates it for
++ * EL0 threads when the boot-arg negroniarm64e=1 is set.
++ *
++ * This header is plain C with no kernel dependency so that the conversion can be
++ * unit-tested on the host (see the scratchpad test fjcvtzs_test.c).
++ */
++#ifndef _ARM64_NEGRONI_FJCVTZS_H_
++#define _ARM64_NEGRONI_FJCVTZS_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++
++#define NEGRONI_FJCVTZS_MASK      0xFFFFFC00u
++#define NEGRONI_FJCVTZS_OPCODE    0x1E7E0000u
++#define NEGRONI_FJCVTZS_RD(i)     ((i) & 0x1fu)
++#define NEGRONI_FJCVTZS_RN(i)     (((i) >> 5) & 0x1fu)
++
++/* FPSR cumulative exception bits */
++#define NEGRONI_FPSR_IOC          (1u << 0)
++#define NEGRONI_FPSR_IXC          (1u << 4)
++#define NEGRONI_FPSR_IDC          (1u << 7)
++/* FPCR.FZ */
++#define NEGRONI_FPCR_FZ           (1u << 24)
++
++static inline bool
++negroni_is_fjcvtzs(uint32_t instr)
++{
++	return (instr & NEGRONI_FJCVTZS_MASK) == NEGRONI_FJCVTZS_OPCODE;
++}
++
++/*
++ * Exact ARM FPToFixedJS semantics (round toward zero, result modulo 2^32).
++ *   bits      raw IEEE-754 double (low 64 bits of Dn)
++ *   fpcr      FPCR of the thread (FZ: denormal inputs are flushed to zero, IDC set)
++ *   *result   Wd (ToInt32 of the value; NaN and infinities give 0)
++ *   *fpsr_or  FPSR cumulative flags to OR in (IOC: NaN/Inf/out of int32 range,
++ *             IXC: inexact in range, IDC: flushed denormal input)
++ * Returns the PSTATE.Z value: true iff the conversion was exact, in the int32
++ * range and the input was not -0.0 (what JS engines test with b.ne).
++ */
++static inline bool
++negroni_fjcvtzs_convert(uint64_t bits, uint32_t fpcr, uint32_t *result, uint32_t *fpsr_or)
++{
++	const uint64_t frac = bits & 0x000FFFFFFFFFFFFFULL;
++	const uint32_t exp = (uint32_t)((bits >> 52) & 0x7FF);
++	const bool neg = (bits >> 63) != 0;
++	uint32_t flags = 0;
++	bool z = true;
++	uint32_t r = 0;
++
++	if (exp == 0x7FF) {
++		/* NaN or infinity: result 0, invalid operation */
++		*result = 0;
++		*fpsr_or = NEGRONI_FPSR_IOC;
++		return false;
++	}
++
++	if (exp == 0) {
++		/*
++		 * Zero or denormal: |value| < 1, truncates to 0. A denormal (with FZ: flushed,
++		 * IDC) is inexact; zero is exact except that -0.0 clears Z.
++		 */
++		if (frac != 0) {
++			if (fpcr & NEGRONI_FPCR_FZ) {
++				flags |= NEGRONI_FPSR_IDC;
++				z = !neg ? true : false;      /* flushed to a signed zero */
++			} else {
++				flags |= NEGRONI_FPSR_IXC;
++				z = false;
++			}
++		} else if (neg) {
++			z = false;
++		}
++		*result = 0;
++		*fpsr_or = flags;
++		return z;
++	}
++
++	/* normal number: value = (2^52 | frac) * 2^(exp - 1075) */
++	const uint64_t mant = (1ULL << 52) | frac;
++	const int e = (int)exp - 1075;
++
++	if (e <= -53) {
++		/* |value| < 1: truncates to 0 (+0, inexact; the value is never zero here) */
++		r = 0;
++		flags |= NEGRONI_FPSR_IXC;
++		z = false;
++	} else if (e < 0) {
++		/* has a fractional part of -e bits */
++		const unsigned sh = (unsigned)(-e);
++		const uint64_t ip = mant >> sh;
++		const bool inexact = (mant & ((1ULL << sh) - 1)) != 0;
++		/* ip < 2^53 */
++		r = (uint32_t)(neg ? (0u - (uint32_t)ip) : (uint32_t)ip);
++		const bool in_range = neg ? (ip <= 0x80000000ULL) : (ip <= 0x7FFFFFFFULL);
++		if (!in_range) {
++			flags |= NEGRONI_FPSR_IOC;
++			z = false;
++		} else if (inexact) {
++			flags |= NEGRONI_FPSR_IXC;
++			z = false;
++		}
++	} else {
++		/* integer valued: mant * 2^e, e >= 0 */
++		if (e >= 32 + 11) {
++			/* low 32 bits of the integer are all zero, magnitude >= 2^63: out of range */
++			r = 0;
++			flags |= NEGRONI_FPSR_IOC;
++			z = false;
++		} else {
++			/* mant < 2^53, e <= 42: shifted value modulo 2^64 is exact in the low 32 bits */
++			const uint64_t ip = (e >= 11) ? 0 : (mant << e);   /* only used for the range test */
++			const uint32_t lo = (e >= 32) ? 0u : (uint32_t)(mant << e);
++			r = neg ? (0u - lo) : lo;
++			bool in_range;
++			if (e >= 11) {
++				/* |value| >= 2^52 * 2^11 = 2^63 > int32 range, except nothing */
++				in_range = false;
++			} else {
++				in_range = neg ? (ip <= 0x80000000ULL) : (ip <= 0x7FFFFFFFULL);
++			}
++			if (!in_range) {
++				flags |= NEGRONI_FPSR_IOC;
++				z = false;
++			}
++		}
++	}
++
++	*result = r;
++	*fpsr_or = flags;
++	return z;
++}
++
++#endif /* _ARM64_NEGRONI_FJCVTZS_H_ */
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 464a2b9..9201083 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -38,6 +38,7 @@
+ #include <arm64/machine_machdep.h>
+ #include <arm64/monotonic.h>
+ #include <arm64/instructions.h>
++#include <arm64/negroni_fjcvtzs.h>
+ 
+ #include <kern/debug.h>
+ #include <kern/restartable.h>
+@@ -159,6 +160,9 @@ extern kern_return_t arm_fast_fault(pmap_t, vm_map_address_t, vm_prot_t, bool, b
+ 
+ static void handle_uncategorized(arm_saved_state_t *);
+ 
++/* kern_exec.c: boot-arg negroniarm64e=1 (iOS 18 arm64e userland on a CPU without PAuth/JSCVT) */
++extern bool negroni_arm64e_enabled(void);
++
+ /*
+  * For UBSan trap and continue handling, we must be able to recover
+  * from handle_kernel_breakpoint().
+@@ -889,6 +893,46 @@ sleh_synchronous(arm_context_t *context, uint32_t esr, vm_offset_t far)
+ #endif
+ }
+ 
++/*
++ * NEGRONI: emulate FJCVTZS Wd, Dn (ARMv8.3-JSCVT, absent on SDM845's Kryo 385) for
++ * 64-bit EL0 threads; used by the iOS 18 JavaScriptCore/WebCore (docs/IOS18_PORT.md).
++ * Dn is read from the thread's saved NEON state, Wd is written zero-extended,
++ * PSTATE.{N,Z,C,V} = {0, exact, 0, 0}, FPSR cumulative bits are updated and the
++ * PC moves past the instruction. Returns false (nothing changed) if the thread
++ * has no usable NEON state, in which case the caller raises the usual SIGILL.
++ */
++static bool
++negroni_emulate_fjcvtzs(arm_saved_state_t *state, uint32_t instr)
++{
++	static uint32_t negroni_fjcvtzs_logged = 0;
++	thread_t thread = current_thread();
++	arm_neon_saved_state_t *ns = thread->machine.uNeon;
++
++	if (ns == NULL || !is_neon_saved_state64(ns)) {
++		return false;
++	}
++
++	arm_neon_saved_state64_t *ns64 = neon_state64(ns);
++	const uint32_t rd = NEGRONI_FJCVTZS_RD(instr);
++	const uint32_t rn = NEGRONI_FJCVTZS_RN(instr);
++	uint32_t result = 0, fpsr_or = 0;
++	bool z = negroni_fjcvtzs_convert((uint64_t)ns64->v.q[rn], ns64->fpcr, &result, &fpsr_or);
++
++	if (rd != 31) {
++		set_saved_state_reg(state, rd, (register_t)result);     /* Wd: upper 32 bits zero */
++	}
++	ns64->fpsr |= fpsr_or;
++	set_saved_state_cpsr(state, (get_saved_state_cpsr(state) & ~(PSR64_N | PSR64_Z | PSR64_C | PSR64_V)) |
++	    (z ? PSR64_Z : 0));
++	set_saved_state_pc(state, get_saved_state_pc(state) + 4);
++
++	if (os_atomic_inc_orig(&negroni_fjcvtzs_logged, relaxed) == 0) {
++		printf("NEGRONI: emulating FJCVTZS (first at pc=0x%llx, w%u <- d%u)\n",
++		    (unsigned long long)(get_saved_state_pc(state) - 4), rd, rn);
++	}
++	return true;
++}
++
+ /*
+  * Uncategorized exceptions are a catch-all for general execution errors.
+  * ARM64_TODO: For now, we assume this is for undefined instruction exceptions.
+@@ -966,6 +1010,14 @@ handle_uncategorized(arm_saved_state_t *state)
+ 		}
+ 	}
+ 
++	/*
++	 * negroniarm64e=1: FJCVTZS is not implemented by this CPU, emulate it.
++	 */
++	if (negroni_is_fjcvtzs(instr) && PSR64_IS_USER64(get_saved_state_cpsr(state)) &&
++	    negroni_arm64e_enabled() && negroni_emulate_fjcvtzs(state, instr)) {
++		return;
++	}
++
+ 	/*
+ 	 * Check for GDB breakpoint via illegal opcode.
+ 	 */
+diff --git a/osfmk/ipc/mach_port.c b/osfmk/ipc/mach_port.c
+index d47140b..f82a4d5 100644
+--- a/osfmk/ipc/mach_port.c
++++ b/osfmk/ipc/mach_port.c
+@@ -3067,10 +3067,13 @@ mach_port_is_connection_for_service(
+ 		return KERN_INVALID_ARGUMENT;
+ 	}
+ 
+-	if (!mach_msg_filter_at_least(MACH_MSG_FILTER_CALLBACKS_VERSION_1)) {
+-		return KERN_NOT_SUPPORTED;
+-	}
+-
++	/*
++	 * negroni (0156): no Sandbox message filter callbacks are registered, which made this return
++	 * KERN_NOT_SUPPORTED. libxpc accepts only KERN_SUCCESS / KERN_INVALID_CAPABILITY here and otherwise
++	 * logs "Failed to verify check-in connection port ..." and drops every peer check-in ("Bogus check-in
++	 * attempt"), so no XPC listener ever accepted a client. Without a filter there is nothing to check: fall
++	 * through, ip_service_port_get_sblabel() yields no label -> KERN_SUCCESS with filter id 0.
++	 */
+ 	ret = ipc_port_translate_receive(space, service_port_name, &service_port);
+ 	if (ret) {
+ 		return ret;
+diff --git a/osfmk/kern/ipc_kobject.c b/osfmk/kern/ipc_kobject.c
+index f15fe77..24ab90e 100644
+--- a/osfmk/kern/ipc_kobject.c
++++ b/osfmk/kern/ipc_kobject.c
+@@ -158,6 +158,122 @@ typedef struct {
+ 
+ static void ipc_kobject_subst_once_no_senders(ipc_port_t, mach_msg_type_number_t);
+ 
++/*
++ * iOS 18 userland on this xnu-8796 kernel (docs/IOS18_PORT.md, negroniarm64e=1).
++ *
++ * xnu-10002+ replaced the kernel side of task routines 3403/3404 (same
++ * msgh_ids) by _kernelrpc_mach_ports_register3 / _kernelrpc_mach_ports_lookup3:
++ * three plain mach_port_t arguments instead of one OOL array of ports.
++ *   register3 request: header, body{3}, 3 x port descriptor (COPY_SEND), no NDR
++ *   lookup3 reply:     header, body{3}, 3 x port descriptor (MOVE_SEND), no NDR
++ * iOS 18's libsystem_kernel validates exactly that (size 0x40, 3 descriptors,
++ * no NDR) and returns MIG_TYPE_ERROR (-300) for the old OOL reply, which made
++ * launchd 18 exit with "mach_ports_lookup() failed: -300".
++ * The two layouts cannot share a MIG stub, so intercept here:
++ *  - lookup (request has no arguments, identical for both layouts): only for
++ *    arm64e callers, with negroniarm64e=1; arm64 (iOS 16) callers keep the OOL reply.
++ *  - register: by request shape (3 descriptors, size of the new layout); the
++ *    old request (1 OOL descriptor + NDR + count) has a different size.
++ */
++#define NEGRONI_MSGH_ID_PORTS_REGISTER 3403
++#define NEGRONI_MSGH_ID_PORTS_LOOKUP   3404
++
++extern bool negroni_arm64e_enabled(void);
++extern bool negroni_proc_is_arm64e(struct proc *p);
++
++#pragma pack(push, 4)
++typedef struct {
++	mach_msg_header_t Head;
++	mach_msg_body_t msgh_body;
++	mach_msg_port_descriptor_t port[TASK_PORT_REGISTER_MAX];
++} negroni_ports3_msg_t;
++#pragma pack(pop)
++
++static bool
++negroni_ports3_register_shape(const mach_msg_header_t *hdr)
++{
++	const negroni_ports3_msg_t *m = (const negroni_ports3_msg_t *)hdr;
++
++	if (!(hdr->msgh_bits & MACH_MSGH_BITS_COMPLEX) ||
++	    hdr->msgh_size != sizeof(negroni_ports3_msg_t) ||
++	    m->msgh_body.msgh_descriptor_count != TASK_PORT_REGISTER_MAX) {
++		return false;
++	}
++	for (int i = 0; i < TASK_PORT_REGISTER_MAX; i++) {
++		if (m->port[i].type != MACH_MSG_PORT_DESCRIPTOR) {
++			return false;
++		}
++	}
++	return true;
++}
++
++/* Returns true when the request was answered here (reply filled in). */
++static bool
++negroni_ports3_intercept(
++	mach_msg_header_t *req_hdr,
++	mach_msg_header_t *reply_hdr,
++	struct proc       *curproc)
++{
++	mig_reply_error_t *err = (mig_reply_error_t *)reply_hdr;
++	negroni_ports3_msg_t *out = (negroni_ports3_msg_t *)reply_hdr;
++	negroni_ports3_msg_t *in = (negroni_ports3_msg_t *)req_hdr;
++	task_t target_task;
++	kern_return_t kr;
++
++	if (req_hdr->msgh_id == NEGRONI_MSGH_ID_PORTS_LOOKUP) {
++		mach_port_array_t ports = NULL;
++		mach_msg_type_number_t cnt = 0;
++
++		if (!negroni_arm64e_enabled() || !negroni_proc_is_arm64e(curproc)) {
++			return false;
++		}
++		if ((req_hdr->msgh_bits & MACH_MSGH_BITS_COMPLEX) ||
++		    req_hdr->msgh_size != sizeof(mach_msg_header_t)) {
++			err->RetCode = MIG_BAD_ARGUMENTS;
++			return true;
++		}
++		target_task = convert_port_to_task_mig(req_hdr->msgh_remote_port);
++		kr = mach_ports_lookup(target_task, &ports, &cnt);
++		task_deallocate_mig(target_task);
++		if (kr != KERN_SUCCESS) {
++			err->RetCode = kr;
++			return true;
++		}
++		assert(cnt == TASK_PORT_REGISTER_MAX);
++		for (int i = 0; i < TASK_PORT_REGISTER_MAX; i++) {
++			out->port[i].name = ports[i];
++			out->port[i].disposition = MACH_MSG_TYPE_PORT_SEND;
++			out->port[i].type = MACH_MSG_PORT_DESCRIPTOR;
++		}
++		kfree_type(ipc_port_t, TASK_PORT_REGISTER_MAX, ports);
++		out->msgh_body.msgh_descriptor_count = TASK_PORT_REGISTER_MAX;
++		out->Head.msgh_bits |= MACH_MSGH_BITS_COMPLEX;
++		out->Head.msgh_size = (mach_msg_size_t)sizeof(negroni_ports3_msg_t);
++		return true;
++	}
++
++	if (req_hdr->msgh_id == NEGRONI_MSGH_ID_PORTS_REGISTER &&
++	    negroni_arm64e_enabled() && negroni_ports3_register_shape(req_hdr)) {
++		mach_port_array_t ports;
++
++		ports = kalloc_type(mach_port_t, TASK_PORT_REGISTER_MAX,
++		    Z_WAITOK | Z_ZERO | Z_NOFAIL);
++		for (int i = 0; i < TASK_PORT_REGISTER_MAX; i++) {
++			ports[i] = in->port[i].name;
++		}
++		target_task = convert_port_to_task_mig(req_hdr->msgh_remote_port);
++		/* takes over the rights and the array on success */
++		kr = mach_ports_register(target_task, ports, TASK_PORT_REGISTER_MAX);
++		task_deallocate_mig(target_task);
++		if (kr != KERN_SUCCESS) {
++			kfree_type(mach_port_t, TASK_PORT_REGISTER_MAX, ports);
++		}
++		err->RetCode = kr;
++		return true;
++	}
++	return false;
++}
++
+ IPC_KOBJECT_DEFINE(IKOT_MEMORY_OBJECT);   /* vestigial, no real instance */
+ IPC_KOBJECT_DEFINE(IKOT_PORT_SUBST_ONCE,
+     .iko_op_no_senders = ipc_kobject_subst_once_no_senders);
+@@ -404,6 +520,11 @@ ipc_kobject_server_internal(
+ 	} else {
+ 		reply_size = ptr->size;
+ 	}
++	if (request_msgh_id == NEGRONI_MSGH_ID_PORTS_LOOKUP &&
++	    reply_size < sizeof(negroni_ports3_msg_t)) {
++		/* iOS 18 layout reply (3 port descriptors) is larger than the old one */
++		reply_size = sizeof(negroni_ports3_msg_t);
++	}
+ 
+ 	/*
+ 	 * MIG should really assure no data leakage -
+@@ -444,7 +565,11 @@ ipc_kobject_server_internal(
+ #endif /* CONFIG_MACF */
+ 
+ 		__BeforeKobjectServerTrace(idx);
+-		(*ptr->routine)(req_hdr, reply_hdr);
++		if (!((request_msgh_id == NEGRONI_MSGH_ID_PORTS_LOOKUP ||
++		    request_msgh_id == NEGRONI_MSGH_ID_PORTS_REGISTER) &&
++		    negroni_ports3_intercept(req_hdr, reply_hdr, curproc))) {
++			(*ptr->routine)(req_hdr, reply_hdr);
++		}
+ 		__AfterKobjectServerTrace(idx);
+ 
+ #if CONFIG_MACF
+diff --git a/osfmk/kern/syscall_sw.c b/osfmk/kern/syscall_sw.c
+index bfe55cf..3dd8f92 100644
+--- a/osfmk/kern/syscall_sw.c
++++ b/osfmk/kern/syscall_sw.c
+@@ -102,6 +102,9 @@ int kern_invalid_debug = 0;
+ #include <mach/mk_timer.h>
+ 
+ 
++/* iOS 18 trap 88, see below */
++kern_return_t negroni_exclaves_ctl_trap(struct kern_invalid_args *args);
++
+ const mach_trap_t       mach_trap_table[MACH_TRAP_TABLE_COUNT] = {
+ /* 0 */ MACH_TRAP(kern_invalid, 0, 0, NULL),
+ /* 1 */ MACH_TRAP(kern_invalid, 0, 0, NULL),
+@@ -195,7 +198,7 @@ const mach_trap_t       mach_trap_table[MACH_TRAP_TABLE_COUNT] = {
+ /* 85 */ MACH_TRAP(kern_invalid, 0, 0, NULL),
+ /* 86 */ MACH_TRAP(kern_invalid, 0, 0, NULL),
+ /* 87 */ MACH_TRAP(kern_invalid, 0, 0, NULL),
+-/* 88 */ MACH_TRAP(kern_invalid, 0, 0, NULL),
++/* 88 */ MACH_TRAP(negroni_exclaves_ctl_trap, 0, 0, NULL),
+ /* 89 */ MACH_TRAP(mach_timebase_info_trap, 1, 1, munge_w),
+ /* 90 */ MACH_TRAP(mach_wait_until_trap, 1, 2, munge_l),
+ /* 91 */ MACH_TRAP(mk_timer_create_trap, 0, 0, NULL, .mach_trap_returns_port = 1),
+@@ -332,7 +335,7 @@ const char * const mach_syscall_name_table[MACH_TRAP_TABLE_COUNT] = {
+ /* 85 */ "kern_invalid",
+ /* 86 */ "kern_invalid",
+ /* 87 */ "kern_invalid",
+-/* 88 */ "kern_invalid",
++/* 88 */ "exclaves_ctl_trap",
+ /* 89 */ "mach_timebase_info_trap",
+ /* 90 */ "mach_wait_until_trap",
+ /* 91 */ "mk_timer_create_trap",
+@@ -379,6 +382,19 @@ const char * const mach_syscall_name_table[MACH_TRAP_TABLE_COUNT] = {
+ 
+ const int mach_trap_count = (sizeof(mach_trap_table) / sizeof(mach_trap_table[0]));
+ 
++/*
++ * iOS 18 (xnu-11215) trap 88 is exclaves_ctl_trap. launchd's exclaves-boot task calls it; on
++ * devices without exclaves the kernel answers KERN_NOT_SUPPORTED and launchd goes on, while
++ * kern_invalid here raises EXC_SYSCALL -> SIGSYS and pid 1 dies (namespace 2 subcode 0xc).
++ * Nothing in the iOS 16 userland uses trap 88.
++ */
++kern_return_t
++negroni_exclaves_ctl_trap(
++	__unused struct kern_invalid_args *args)
++{
++	return KERN_NOT_SUPPORTED;
++}
++
+ kern_return_t
+ kern_invalid(
+ 	__unused struct kern_invalid_args *args)
+diff --git a/osfmk/mach/mach_param.h b/osfmk/mach/mach_param.h
+index f10d4d1..dc7b48a 100644
+--- a/osfmk/mach/mach_param.h
++++ b/osfmk/mach/mach_param.h
+@@ -71,7 +71,12 @@
+ #define TASK_PORT_REGISTER_MAX  3
+ 
+ /* Number of watchport for task */
+-#define TASK_MAX_WATCHPORT_COUNT 32
++/*
++ * xnu-11215 (iOS 18) allows 128: iOS 18 launchd passes every MachService of a job as an
++ * importance watchport, and SpringBoard has more than 32, so posix_spawn failed with EINVAL
++ * (kern_exec.c PSPA_IMP_WATCHPORTS) and SpringBoard and several xpcproxy jobs never started.
++ */
++#define TASK_MAX_WATCHPORT_COUNT 128
+ 
+ /* Number of different task port flavor */
+ #define TASK_SELF_PORT_COUNT 4
+diff --git a/osfmk/mach/shared_region.h b/osfmk/mach/shared_region.h
+index 5fb18d2..639b794 100644
+--- a/osfmk/mach/shared_region.h
++++ b/osfmk/mach/shared_region.h
+@@ -88,7 +88,13 @@
+ /* ARM64_TODO: move to higher memory */
+ #endif
+ #define SHARED_REGION_BASE_ARM64                0x180000000ULL
+-#define SHARED_REGION_SIZE_ARM64                0x100000000ULL
++/*
++ * NEGRONI iOS 18 port: the iOS 18 arm64e shared cache (67 files, 0x104bd8000 bytes
++ * plus up to 0x20000000 of ASLR slide) does not fit in the 4 GB of xnu-8796.
++ * xnu-11215 uses 6 GB; so do we (the user address space limit follows,
++ * see ARM64_MIN_MAX_ADDRESS in osfmk/arm/pmap/pmap.c).
++ */
++#define SHARED_REGION_SIZE_ARM64                0x180000000ULL
+ #define SHARED_REGION_NESTING_BASE_ARM64        SHARED_REGION_BASE_ARM64
+ #define SHARED_REGION_NESTING_SIZE_ARM64        SHARED_REGION_SIZE_ARM64
+ #define SHARED_REGION_NESTING_MIN_ARM64         ?
+diff --git a/osfmk/vm/vm_dyld_pager.c b/osfmk/vm/vm_dyld_pager.c
+index b7290fa..c328a5e 100644
+--- a/osfmk/vm/vm_dyld_pager.c
++++ b/osfmk/vm/vm_dyld_pager.c
+@@ -467,6 +467,30 @@ signPointer(
+ 	return KERN_SUCCESS;
+ }
+ 
++#else /* !defined(HAS_APPLE_PAC) */
++/*
++ * No pointer authentication in this kernel (NEGRONI, SDM845): arm64e images
++ * (rewritten offline by tools/ios18/pacstrip.py so that their code contains no
++ * PAC instruction) still carry DYLD_CHAINED_PTR_ARM64E fixups. Their pointers
++ * stay unsigned: the AUTx and PACx instructions are NOPs in the rewritten code.
++ * Without this the pager failed every such page ("unknown pointer_format",
++ * KERN_MEMORY_ERROR on the first touch of __AUTH_CONST/__AUTH).
++ */
++static kern_return_t
++signPointer(
++	uint64_t         unsignedAddr,
++	__unused void    *loc,
++	__unused bool    addrDiv,
++	__unused uint16_t diversity,
++	__unused ptrauth_key key,
++	__unused dyld_pager_t pager,
++	uint64_t         *signedAddr)
++{
++	*signedAddr = unsignedAddr;
++	return KERN_SUCCESS;
++}
++#endif /* defined(HAS_APPLE_PAC) */
++
+ /*
+  * Apply fixups to a page used by a 64 bit process using pointer authentication.
+  */
+@@ -563,7 +587,6 @@ fixupPageAuth64(
+ 	} while (delta != 0);
+ 	return KERN_SUCCESS;
+ }
+-#endif /* defined(HAS_APPLE_PAC) */
+ 
+ 
+ /*
+@@ -649,7 +672,6 @@ fixup_page(
+ 	 * Route to the appropriate fixup routine
+ 	 */
+ 	switch (hdr->mwli_pointer_format) {
+-#if defined(HAS_APPLE_PAC)
+ 	case DYLD_CHAINED_PTR_ARM64E:
+ 		fixupPageAuth64(userVA, contents, end_contents, pager, segInfo, pageIndex, false);
+ 		break;
+@@ -657,7 +679,6 @@ fixup_page(
+ 	case DYLD_CHAINED_PTR_ARM64E_USERLAND24:
+ 		fixupPageAuth64(userVA, contents, end_contents, pager, segInfo, pageIndex, true);
+ 		break;
+-#endif /* defined(HAS_APPLE_PAC) */
+ 	case DYLD_CHAINED_PTR_64:
+ 		fixupPage64(contents, end_contents, link_info, segInfo, pageIndex, false);
+ 		break;
+diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+index db1d613..01d2f64 100644
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -2890,6 +2890,39 @@ vm_shared_region_slide_sanity_check_v4(
+ }
+ 
+ 
++static kern_return_t
++vm_shared_region_slide_sanity_check_v5(
++	vm_shared_region_slide_info_entry_v5_t s_info,
++	mach_vm_size_t slide_info_size)
++{
++	if (slide_info_size < sizeof(struct vm_shared_region_slide_info_entry_v5)) {
++		printf("%s bad slide_info_size: %lx\n", __func__, (uintptr_t)slide_info_size);
++		return KERN_FAILURE;
++	}
++	if (s_info->page_size != PAGE_SIZE_FOR_SR_SLIDE_16KB ||
++	    s_info->page_size > PAGE_SIZE) {
++		printf("vm_shared_region_slide_sanity_check_v5: bad page_size 0x%llx (PAGE_SIZE 0x%llx)\n", (uint64_t)s_info->page_size, (uint64_t)PAGE_SIZE);
++		return KERN_FAILURE;
++	}
++
++	uint32_t page_starts_count = s_info->page_starts_count;
++	mach_vm_size_t num_trailing_entries = page_starts_count;
++	mach_vm_size_t trailing_size = num_trailing_entries << 1;
++	mach_vm_size_t required_size = sizeof(*s_info) + trailing_size;
++	if (required_size < sizeof(*s_info)) {
++		printf("vm_shared_region_slide_sanity_check_v5: required_size overflow 0x%llx\n", (uint64_t)required_size);
++		return KERN_FAILURE;
++	}
++
++	if (required_size > slide_info_size) {
++		printf("vm_shared_region_slide_sanity_check_v5: required_size 0x%llx > slide_info_size 0x%llx\n", (uint64_t)required_size, (uint64_t)slide_info_size);
++		return KERN_FAILURE;
++	}
++
++	return KERN_SUCCESS;
++}
++
++
+ static kern_return_t
+ vm_shared_region_slide_sanity_check(
+ 	vm_shared_region_slide_info_entry_t s_info,
+@@ -2910,6 +2943,9 @@ vm_shared_region_slide_sanity_check(
+ 	case 4:
+ 		kr = vm_shared_region_slide_sanity_check_v4(&s_info->v4, s_info_size);
+ 		break;
++	case 5:
++		kr = vm_shared_region_slide_sanity_check_v5(&s_info->v5, s_info_size);
++		break;
+ 	default:
+ 		kr = KERN_FAILURE;
+ 	}
+@@ -3369,6 +3405,112 @@ vm_shared_region_slide_page_v4(vm_shared_region_slide_info_t si, vm_offset_t vad
+ 
+ 
+ 
++static kern_return_t
++vm_shared_region_slide_page_v5(
++	vm_shared_region_slide_info_t si,
++	vm_offset_t vaddr,
++	__unused mach_vm_offset_t uservaddr,
++	uint32_t pageIndex,
++#if !__has_feature(ptrauth_calls)
++	__unused
++#endif /* !__has_feature(ptrauth_calls) */
++	uint64_t jop_key)
++{
++	vm_shared_region_slide_info_entry_v5_t s_info = &si->si_slide_info_entry->v5;
++	const uint32_t slide_amount = si->si_slide;
++	const uint64_t value_add = s_info->value_add;
++
++	uint8_t *page_content = (uint8_t *)vaddr;
++	uint16_t page_entry;
++
++	if (pageIndex >= s_info->page_starts_count) {
++		printf("vm_shared_region_slide_page() did not find page start in slide info: pageIndex=%u, count=%u\n",
++		    pageIndex, s_info->page_starts_count);
++		return KERN_FAILURE;
++	}
++	page_entry = s_info->page_starts[pageIndex];
++
++	if (page_entry == DYLD_CACHE_SLIDE_V5_PAGE_ATTR_NO_REBASE) {
++		return KERN_SUCCESS;
++	}
++
++	uint8_t* rebaseLocation = page_content;
++	uint64_t delta = page_entry;
++	do {
++		rebaseLocation += delta;
++		if ((uintptr_t)(rebaseLocation - page_content) + sizeof(uint64_t) > PAGE_SIZE_FOR_SR_SLIDE_16KB) {
++			printf("vm_shared_region_slide_page_v5: chain leaves the page: pageIndex=%u\n", pageIndex);
++			return KERN_FAILURE;
++		}
++		uint64_t value;
++		memcpy(&value, rebaseLocation, sizeof(value));
++		delta = ((value & 0x7FF0000000000000ULL) >> 52) * sizeof(uint64_t);
++
++		// A pointer is one of :
++		// {
++		//   uint64_t    runtimeOffset   : 34,   // offset from the start of the shared cache
++		//               high8           :  8,
++		//               unused          : 10,
++		//               next            : 11,   // 8-byte stide
++		//               auth            :  1;   // == 0
++		// }
++		// {
++		//   uint64_t    runtimeOffset   : 34,   // offset from the start of the shared cache
++		//               diversity       : 16,
++		//               addrDiv         :  1,
++		//               keyIsData       :  1,   // implicitly always the 'A' key.  0 -> IA.  1 -> DA
++		//               next            : 11,   // 8-byte stide
++		//               auth            :  1;   // == 1
++		// }
++
++#if __has_feature(ptrauth_calls)
++		bool        addrDiv = ((value & (1ULL << 50)) != 0);
++		bool        keyIsData = ((value & (1ULL << 51)) != 0);
++		// the key is always A, and the bit tells us if its IA or ID
++		ptrauth_key key = keyIsData ? ptrauth_key_asda : ptrauth_key_asia;
++		uint16_t    diversity = (uint16_t)((value >> 34) & 0xFFFF);
++#endif /* __has_feature(ptrauth_calls) */
++		uint64_t    high8 = (value << 22) & 0xFF00000000000000ULL;
++		bool        isAuthenticated = (value & (1ULL << 63)) != 0;
++
++		// The new value for a rebase is the low 34-bits of the threaded value plus the base plus slide.
++		value = (value & 0x3FFFFFFFFULL) + value_add + slide_amount;
++		if (isAuthenticated) {
++#if __has_feature(ptrauth_calls)
++			uint64_t discriminator = diversity;
++			if (addrDiv) {
++				// First calculate a new discriminator using the address of where we are trying to store the value
++				uintptr_t pageOffset = rebaseLocation - page_content;
++				discriminator = __builtin_ptrauth_blend_discriminator((void*)(((uintptr_t)uservaddr) + pageOffset), discriminator);
++			}
++
++			if (jop_key != 0 && si->si_ptrauth && !arm_user_jop_disabled()) {
++				/*
++				 * these pointers are used in user mode. disable the kernel key diversification
++				 * so we can sign them for use in user mode.
++				 */
++				value = (uintptr_t)pmap_sign_user_ptr((void *)value, key, discriminator, jop_key);
++			}
++#else /* __has_feature(ptrauth_calls) */
++			/*
++			 * NEGRONI (no PAC on this CPU): the AUTx/PACx instructions of the offline
++			 * rewritten iOS 18 code are NOPs, so an "authenticated" pointer stays the
++			 * plain pointer (same as the dyld pager, patch 0135).
++			 */
++#endif /* __has_feature(ptrauth_calls) */
++		} else {
++			// the value already has the correct low bits, so just add in the high8 if it exists
++			value += high8;
++		}
++
++		memcpy(rebaseLocation, &value, sizeof(value));
++	} while (delta != 0);
++
++	return KERN_SUCCESS;
++}
++
++
++
+ kern_return_t
+ vm_shared_region_slide_page(
+ 	vm_shared_region_slide_info_t si,
+@@ -3386,6 +3528,8 @@ vm_shared_region_slide_page(
+ 		return vm_shared_region_slide_page_v3(si, vaddr, uservaddr, pageIndex, jop_key);
+ 	case 4:
+ 		return vm_shared_region_slide_page_v4(si, vaddr, pageIndex);
++	case 5:
++		return vm_shared_region_slide_page_v5(si, vaddr, uservaddr, pageIndex, jop_key);
+ 	default:
+ 		return KERN_FAILURE;
+ 	}
+diff --git a/osfmk/vm/vm_shared_region.h b/osfmk/vm/vm_shared_region.h
+index 5fb1b6b..0beaf21 100644
+--- a/osfmk/vm/vm_shared_region.h
++++ b/osfmk/vm/vm_shared_region.h
+@@ -96,6 +96,7 @@ typedef struct vm_shared_region *vm_shared_region_t;
+ #include <vm/memory_object.h>
+ 
+ #define PAGE_SIZE_FOR_SR_SLIDE  4096
++#define PAGE_SIZE_FOR_SR_SLIDE_16KB     16384   /* slide info v5 */
+ 
+ /*
+  * Documentation for the slide info format can be found in the dyld project in
+@@ -172,22 +173,41 @@ struct vm_shared_region_slide_info_entry_v4 {
+ #define DYLD_CACHE_SLIDE4_PAGE_USE_EXTRA           0x8000  // index is into extras array (not starts array)
+ #define DYLD_CACHE_SLIDE4_PAGE_EXTRA_END           0x8000  // last chain entry for page
+ 
++/*
++ * Slide info v5 (iOS 18 / xnu-11215, dyld cache format of the arm64e caches).
++ * Backported for the NEGRONI iOS 18 port (docs/IOS18_PORT.md).
++ */
++typedef struct vm_shared_region_slide_info_entry_v5 *vm_shared_region_slide_info_entry_v5_t;
++struct vm_shared_region_slide_info_entry_v5 {
++	uint32_t    version;        // currently 5
++	uint32_t    page_size;      // 16384
++	uint32_t    page_starts_count;
++	uint64_t    value_add;
++	uint16_t    page_starts[] /* page_starts_count */;
++};
++
++#define DYLD_CACHE_SLIDE_V5_PAGE_ATTR_NO_REBASE    0xFFFF    // page has no rebasing
+ 
+ 
+ typedef union vm_shared_region_slide_info_entry *vm_shared_region_slide_info_entry_t;
+ union vm_shared_region_slide_info_entry {
+-	uint32_t version;
++	struct {
++		uint32_t version;
++		uint32_t page_size; // only valid to use this on version >= 2
++	};
+ 	struct vm_shared_region_slide_info_entry_v1 v1;
+ 	struct vm_shared_region_slide_info_entry_v2 v2;
+ 	struct vm_shared_region_slide_info_entry_v3 v3;
+ 	struct vm_shared_region_slide_info_entry_v4 v4;
++	struct vm_shared_region_slide_info_entry_v5 v5;
+ };
+ 
+ #define MIN_SLIDE_INFO_SIZE \
+     MIN(sizeof(struct vm_shared_region_slide_info_entry_v1), \
+     MIN(sizeof(struct vm_shared_region_slide_info_entry_v2), \
+     MIN(sizeof(struct vm_shared_region_slide_info_entry_v3), \
+-    sizeof(struct vm_shared_region_slide_info_entry_v4))))
++    MIN(sizeof(struct vm_shared_region_slide_info_entry_v4), \
++    sizeof(struct vm_shared_region_slide_info_entry_v5)))))
+ 
+ /*
+  * This is the information used by the shared cache pager for sub-sections
+diff --git a/osfmk/vm/vm_shared_region_pager.c b/osfmk/vm/vm_shared_region_pager.c
+index 43d7d09..f21689d 100644
+--- a/osfmk/vm/vm_shared_region_pager.c
++++ b/osfmk/vm/vm_shared_region_pager.c
+@@ -490,6 +490,7 @@ shared_region_pager_data_request(
+ 	int                     interruptible;
+ 	struct vm_object_fault_info     fault_info;
+ 	mach_vm_offset_t        slide_start_address;
++	uint32_t                slide_info_page_size;
+ 
+ 	PAGER_DEBUG(PAGER_ALL, ("shared_region_pager_data_request: %p, %llx, %x, %x\n", mem_obj, offset, length, protection_required));
+ 
+@@ -546,6 +547,9 @@ shared_region_pager_data_request(
+ 	vm_object_reference(src_top_object); /* keep the source object alive */
+ 
+ 	slide_start_address = pager->srp_slide_info->si_slid_address;
++	/* slide info v1 has no page_size field; v5 (iOS 18 caches) slides 16KB pages */
++	slide_info_page_size = pager->srp_slide_info->si_slide_info_entry->version == 1 ?
++	    PAGE_SIZE_FOR_SR_SLIDE : pager->srp_slide_info->si_slide_info_entry->page_size;
+ 
+ 	fault_info.lo_offset += pager->srp_backing_offset;
+ 	fault_info.hi_offset += pager->srp_backing_offset;
+@@ -682,7 +686,7 @@ retry_src_fault:
+ 		 */
+ 		for (offset_in_page = 0;
+ 		    offset_in_page < PAGE_SIZE;
+-		    offset_in_page += PAGE_SIZE_FOR_SR_SLIDE) {
++		    offset_in_page += slide_info_page_size) {
+ 			vm_object_offset_t chunk_offset;
+ 			vm_object_offset_t offset_in_backing_object;
+ 			vm_object_offset_t offset_in_sliding_range;
+@@ -692,7 +696,7 @@ retry_src_fault:
+ 			bcopy((const char *)(src_vaddr +
+ 			    offset_in_page),
+ 			    (char *)(dst_vaddr + offset_in_page),
+-			    PAGE_SIZE_FOR_SR_SLIDE);
++			    slide_info_page_size);
+ 
+ 			offset_in_backing_object = (chunk_offset +
+ 			    pager->srp_backing_offset);
+@@ -707,7 +711,7 @@ retry_src_fault:
+ 			kr = vm_shared_region_slide_page(pager->srp_slide_info,
+ 			    dst_vaddr + offset_in_page,
+ 			    (mach_vm_offset_t) (offset_in_sliding_range + slide_start_address),
+-			    (uint32_t) (offset_in_sliding_range / PAGE_SIZE_FOR_SR_SLIDE),
++			    (uint32_t) (offset_in_sliding_range / slide_info_page_size),
+ #if __has_feature(ptrauth_calls)
+ 			    pager->srp_slide_info->si_ptrauth ? pager->srp_jop_key : 0
+ #else /* __has_feature(ptrauth_calls) */

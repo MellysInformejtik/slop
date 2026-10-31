@@ -21,7 +21,7 @@ index 3386688..1e145df 100644
 + * the RedwoodGPU service (Linux msm DRM for Mesa's freedreno) is built on: GET_PARAM answers,
 + * addresses in context 0 of the GPU's SMMU, page mappings, submission of command buffers the way
 + * Linux's a7xx_submit puts them in the ring, and the fence the core writes when one is done.
-+ * One address space for every client, as on the HackiOS port of the same interface.
++ * One address space for every client, as on the oosexgang port of the same interface.
 + */
 +#define CP_WAIT_TIMESTAMP       0x14
 +#define CP_INDIRECT_BUFFER_PFE  0x3f
@@ -347,7 +347,7 @@ index 0000000..c421013
 + * negroniadreno_keep=1, keeps it on and starts this service. A program that opens it speaks the
 + * interface of Linux's msm DRM driver, the one Mesa's freedreno knows: every request of that
 + * interface is a call of the user client with the request's number as the selector and the
-+ * request's structure passed in and back (the redwood-drm libdrm stand-in of the HackiOS Mesa
++ * request's structure passed in and back (the redwood-drm libdrm stand-in of the oosexgang Mesa
 + * patches, built by .github/workflows/gpu-mesa.yml). What Linux does with mmap() on the device is
 + * the client memory of the type that is the buffer's handle. The service keeps that port's name
 + * so the same userland finds it.

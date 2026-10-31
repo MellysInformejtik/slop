@@ -1,0 +1,962 @@
+diff --git a/iokit/Kernel/arm/NegroniBattery.cpp b/iokit/Kernel/arm/NegroniBattery.cpp
+index 26b1188..b3fdbe9 100644
+--- a/iokit/Kernel/arm/NegroniBattery.cpp
++++ b/iokit/Kernel/arm/NegroniBattery.cpp
+@@ -1,20 +1,173 @@
+ /*
+- * Built-in iOS battery bring-up service. Default: 100%, AC, not charging.
+- * negronibattery=1: read-only PM6150 polling every 30 seconds; voltage-derived
+- * SOC is an UNCALIBRATED estimate, not a replacement for the Linux QG algo.
+- * See report.md for binary evidence, register provenance and integration.
++ * NEGRONI (OnePlus 10 Pro 5G, SM8450): the battery as iOS reads it, an IOPMPowerSource.
++ *
++ * Why (patches/xnu/README-battery.md): the port's earlier class was the sweet
++ * (Redmi Note 10 Pro, PM6150) driver: PM6150 QG/SCHG addresses on SID 0 that do
++ * not exist on SM8450 (SID 0 is PMK8350; 0x1300 is its PON = the keys) and an
++ * arbiter v5 SPMI layer that rejects this v7 arbiter; slop patch 0089 then removed
++ * its personality, so iOS had no power source at all (status bar battery empty).
++ *
++ * On SM8450 the fuel gauge (an external gauge IC, `qcom,external_gauge`) and the
++ * charger are run by the ADSP charger PD and read over GLINK PMIC_RTR_ADSP_APPS;
++ * the HLOS devicetree has no gauge node. Until the ADSP runs (patch 0240 + a
++ * battmgr client), this service estimates the state of charge from what the
++ * application processor can measure:
++ *
++ * Default, READ ONLY (no PMIC write; observer-channel reads with a bounded poll, through the
++ * SPMI arbiter mapping that the RTC of patch 0203 also uses, bsd/dev/negroni_spmi.c):
++ *   PM8350B BCL, SID 3 0x4700 (live DT bcl@4700 "qcom,bcl-v5", qcom,pmic7-threshold;
++ *   downstream drivers/thermal/qcom/bcl_pmic5.c):
++ *     0x4746 MONITOR_EN   bit 7 = BCL monitor on (Linux sets it at probe; we only read it)
++ *     0x4772 VBAT_CONV_REQ non-zero = VBAT ADC on (Linux registers the vbat zone only then)
++ *     0x4776 VBAT_READ    u8, 49.827 mV per bit; 0x7f = no reading (which node it measures
++ *                         on the 2S pack is not known: above 5 V it is taken as the pack)
++ *     0x4786 IBAT_READ    s8, 78.127 mA per bit (default range factor), + = discharge
++ *                         (DT trips ibat-lvl0/1 9000/10000 mA are discharge limits)
++ * Opt-in negronibatt=4/5, VADC (writes the ADC7 conversion request registers only,
++ * 0x3140-0x3145/0x3147, when EE 0 owns that APID; Linux qcom-spmi-adc5.c adc7 path):
++ *   PMK8350 VADC SID 0 0x3100, channels of the live DT (vadc@3100):
++ *   0x38f pm8350b_vbat_sns   prescale 1/3      battery voltage (per-cell value, 2S pack)
++ *   0x311 pm8350b_usb_in_v_div_16  1/16        USBIN (VBUS): charger present
++ *   0x3a1 pm8350b_ichg_fb    1000/305185       charge current (uA)
++ *   0x317 pm8350b_iin_fb     32/100            input current (uA)
++ *   0x146 pm8350_hot_pocket_therm  ratiometric skin temperature (OPLUS skin_temp_chan)
++ *
++ * State of charge: open-circuit-voltage curve (4.45 V class cell, the DT's vfloat
++ * 4435 mV, power-off 3300 mV) with IR compensation, coulomb counting of the battery
++ * current (BCL IBAT both ways, or the VADC charge current), a slow pull toward the
++ * voltage value, monotonic smoothing (never up on battery, never down on a charger)
++ * and a slew limit. It is an ESTIMATE (CapacityEstimated = true).
++ *
++ * Boot-arg negronibatt:
++ *   0  no power source (the kernel before this patch)
++ *   1  read-only BCL estimate (default)
++ *   2  1 + diagnostics: a raw line per poll, a one-time PM8350B (SID 3) peripheral census,
++ *      and a line per change of a PM8350B peripheral's INT_RT_STS (plug-event discovery)
++ *   3  static 100 %, on AC, not charging (the old NegroniBattery fallback; no PMIC access)
++ *   4  1 + PMK8350 VADC conversions (better voltage, VBUS, charge current, skin temperature)
++ *   5  4 + the diagnostics of 2
++ * Keys follow AppleSmartBattery as the reference ports learned them (bergamota 0130,
++ * oosexgang RedwoodBattery.cpp): CurrentCapacity is the percentage with MaxCapacity 100;
++ * mAh go to AppleRaw*Capacity / NominalChargeCapacity / DesignCapacity. 20H392 powerd
++ * matches IOPMPowerSource and reads CurrentCapacity, MaxCapacity, AppleRawCurrentCapacity,
++ * AppleRawMaxCapacity, IsCharging, FullyCharged, ExternalConnected, ExternalChargeCapable,
++ * AppleRawExternalConnected, BatteryInstalled, Voltage, Amperage, InstantAmperage,
++ * Temperature, CycleCount, DesignCapacity, NominalChargeCapacity, TimeRemaining,
++ * AtCriticalLevel, AdapterDetails, BatteryData, PermanentFailureStatus (its strings).
++ * Log prefix "NEGRONI BATTERY:".
+  */
+ #if defined(ARM64_BOARD_CONFIG_NEGRONI)
+ #include <device/device_types.h> /* io_buf_ptr_t for private OSKext headers */
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOWorkLoop.h>
+ #include <IOKit/IOTimerEventSource.h>
++#include <IOKit/pwr_mgt/IOPM.h>
+ #include <IOKit/pwr_mgt/IOPMPowerSource.h>
+ #include <libkern/c++/OSCollectionIterator.h>
++#include <kern/clock.h>
+ #include <pexpert/pexpert.h>
++
+ /* bsd/dev/negroni_spmi.c */
+-extern "C" int negroni_spmi_init(void);
+-extern "C" int negroni_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
++extern "C" {
++int negroni_spmi_init(void);
++int negroni_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
++int negroni_spmi_apid(unsigned sid, unsigned peripheral, unsigned *owner);
++bool negroni_spmi_vadc_unlock(void);
++int negroni_spmi_write(unsigned sid, unsigned addr, uint8_t value);
++unsigned negroni_spmi_ppids(uint16_t *ppids, uint8_t *owners, unsigned max);
++}
++
++#define NB_DESIGN_MAH      5000    /* DT qcom,batt_capacity_mah = 0x1388 (1S equivalent of the 2S pack) */
++#define NB_POLL_MS         20000
++#define NB_R_MOHM          80      /* IR compensation (estimate) */
++#define NB_IR_MAX_MV       150
++#define NB_EXT_MV          4000    /* VBUS above this: charger present */
++#define NB_POWER_OFF_MV    3300    /* DT qcom,vbatt_power_off */
++#define NB_TAPER_MV        4300    /* charge current below NB_FULL_MA above this: full */
++#define NB_FULL_MA         150
++#define NB_CUR_MA          50      /* |current| above this: charging / discharging */
++
++enum { NB_OFF = 0, NB_READONLY = 1, NB_RO_DIAG = 2, NB_STATIC = 3, NB_VADC = 4, NB_VADC_DIAG = 5 };
++enum { NB_SRC_STATIC = 0, NB_SRC_BCL = 1, NB_SRC_VADC = 2 };
++static const char *const kSrcName[] = { "static", "PM8350B BCL", "PMK8350 VADC" };
++
++/* PM8350B BCL (SID 3 0x4700), downstream bcl_pmic5.c */
++#define BCL_SID            3u
++#define BCL_BASE           0x4700u
++#define BCL_MONITOR_EN     0x46u
++#define BCL_VBAT_CONV_REQ  0x72u
++#define BCL_VBAT_READ      0x76u
++#define BCL_IBAT_READ      0x86u
++#define BCL_VBAT_UV        49827   /* BCL_VBAT_SCALING_UV */
++#define BCL_VBAT_NONE      0x7f    /* BCL_VBAT_NO_READING */
++#define BCL_IBAT_UA        78127   /* BCL_IBAT_SCALING_UA x range factor 10 / (1000 x 10) */
++#define BCL_READS          8
++
++/* One ADC7 channel: virtual channel = sid << 8 | channel (as in the DT). */
++struct nb_chan {
++	uint8_t sid, chan, ratiometric, settle;  /* settle: hw_settle_2 index */
++	uint32_t num, den;                         /* pre-scaling */
++};
++static const nb_chan kVbat     = { 3, 0x8f, 0, 0, 1, 3 };
++static const nb_chan kVph      = { 3, 0x8e, 0, 0, 1, 3 };
++static const nb_chan kVbatMid  = { 3, 0x96, 0, 0, 1, 3 };  /* 2S midpoint; diagnostics, scale unverified */
++static const nb_chan kUsbIn    = { 3, 0x11, 0, 0, 1, 16 };
++static const nb_chan kIchg     = { 3, 0xa1, 0, 0, 1000, 305185 };
++static const nb_chan kIin      = { 3, 0x17, 0, 0, 32, 100 };
++static const nb_chan kSkin     = { 1, 0x46, 1, 2, 1, 1 };  /* 200 us settle */
++
++/* ADC7 user registers (PMK8350 VADC, SID 0 0x3100), Linux qcom-spmi-adc5.c */
++#define ADC_BASE           0x3100u
++#define ADC_STATUS1        0x08u   /* bit 7 CONV_FAULT, bit 1 REQ_STS, bit 0 EOC */
++#define ADC_APP_SID        0x40u   /* bits 3:0 */
++#define ADC_DIG_PARAM      0x42u   /* bit 6 cal val, 5:4 cal sel, 3:2 decimation */
++#define ADC_CONV_REQ       0x47u
++#define ADC_DATA0          0x50u
++#define ADC_FULL_SCALE     0x70e4  /* adc7 full_scale_code_volt */
++#define ADC_RATIO_MAX      16384   /* RATIO_MAX_ADC7 */
++
++/* Linux adcmap7_100k (NTCG104EF104, 100 k pull-up), -20..82 C, every second point: ohm, m°C */
++static const struct { int32_t r, t; } kNtc[] = {
++	{1135290, -20480}, {1004155, -18432}, {889550, -16384}, {789229, -14336}, {701271, -12288},
++	{624032, -10240}, {556100, -8192}, {496264, -6144}, {443480, -4096}, {396851, -2048},
++	{355598, 0}, {319052, 2048}, {286630, 4096}, {257829, 6144}, {232209, 8192}, {209390, 10240},
++	{189040, 12288}, {170868, 14336}, {154622, 16384}, {140079, 18432}, {127046, 20480},
++	{115352, 22528}, {104848, 24576}, {95402, 26624}, {86897, 28672}, {79232, 30720},
++	{72316, 32768}, {66070, 34816}, {60423, 36864}, {55312, 38912}, {50681, 40960},
++	{46482, 43008}, {42670, 45056}, {39207, 47104}, {36057, 49152}, {33190, 51200},
++	{30577, 53248}, {28194, 55296}, {26020, 57344}, {24033, 59392}, {22216, 61440},
++	{20554, 63488}, {19031, 65536}, {17636, 67584}, {16355, 69632}, {15180, 71680},
++	{14099, 73728}, {13106, 75776}, {12192, 77824}, {11350, 79872}, {10574, 81920},
++};
++
++/* Open-circuit voltage (mV) -> state of charge (hundredths of a percent), 4.45 V class cell [estimate]. */
++static const struct { int32_t mv, soc; } kOcv[] = {
++	{3300, 0}, {3450, 200}, {3550, 400}, {3620, 600}, {3680, 1000}, {3720, 1500},
++	{3750, 2000}, {3770, 2500}, {3790, 3000}, {3810, 3500}, {3840, 4000}, {3870, 4500},
++	{3910, 5000}, {3950, 5500}, {4000, 6000}, {4050, 6500}, {4100, 7000}, {4150, 7500},
++	{4200, 8000}, {4250, 8500}, {4300, 9000}, {4350, 9500}, {4400, 10000},
++};
++
++/* One poll's measurements. Currents: + = into the battery (charging), as IOPMPowerSource Amperage. */
++struct nb_sample {
++	uint8_t bclMon, bclConv;
++	bool bclRead, bclOn;
++	bool bclVbatOk, bclPack;
++	int32_t bclVbatMv;
++	unsigned bclVbatN;
++	bool bclIbatOk;
++	int32_t bclIbatMa;
++	unsigned bclIbatNonzero;
++	bool adcVbatOk;
++	int32_t adcVbatMv;
++	unsigned adcVbatN;
++	bool usbOk, ichgOk, iinOk, tempOk;
++	unsigned usbMv;
++	int32_t ichgMa, iinMa;
++	int centiC;
++};
++
++#define NB_RT_MAX          128
+ 
+ class NegroniBattery : public IOPMPowerSource {
+ 	OSDeclareDefaultStructors(NegroniBattery);
+@@ -26,17 +179,32 @@ public:
+ private:
+ 	IOWorkLoop *fLoop;
+ 	IOTimerEventSource *fTimer;
+-	bool fTimerAdded, fRunning, fReal;
+-	int fLastMode;
++	bool fTimerAdded, fRunning, fReal, fVadc, fDiag, fHaveSoc, fCensusDone, fExternal, fIbatSeen, fNoDataLogged;
++	int fMode;
++	int32_t fSoc;              /* hundredths of a percent */
++	uint64_t fLastNs;
++	unsigned fLowPolls, fFailPolls;
++	int fLastPercent, fLastFlags;
++	unsigned fRtCount;
++	uint16_t fRtPpid[NB_RT_MAX];
++	uint8_t fRtLast[NB_RT_MAX];
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+-	void publish(unsigned percent, unsigned mv, int ma, bool external,
+-	    bool capable, bool charging, bool full, bool measured, bool currentValid);
++	void putObject(const char *key, OSObject *value);
++	void putString(const char *key, const char *value);
++	void publish(unsigned percent, unsigned mv, int ma, int centiC, bool external,
++	    bool charging, bool full, int source, unsigned usbMv, int iinMa);
+ 	void poll(void);
++	void census(void);
++	void rtChanges(void);
++	void readBcl(nb_sample &s);
++	void readVadc(nb_sample &s);
+ 	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+-	static bool readWord(unsigned address, uint16_t *value);
+-	static unsigned estimatePercent(unsigned mv);
++	static int adcCode(const nb_chan &c, uint16_t *code);
++	static bool adcMicro(const nb_chan &c, int64_t *value);
++	static bool adcTemp(const nb_chan &c, int *centiC);
++	static int32_t socFromOcv(int32_t mv);
+ };
+ OSDefineMetaClassAndStructors(NegroniBattery, IOPMPowerSource);
+ 
+@@ -51,7 +219,15 @@ NegroniBattery::init(OSDictionary *dictionary)
+ 	}
+ 	fLoop = NULL;
+ 	fTimer = NULL;
+-	fTimerAdded = fRunning = fReal = false;
++	fTimerAdded = fRunning = fReal = fVadc = fDiag = fHaveSoc = fCensusDone = false;
++	fExternal = fIbatSeen = fNoDataLogged = false;
++	fMode = NB_READONLY;
++	fSoc = 0;
++	fLastNs = 0;
++	fLowPolls = fFailPolls = 0;
++	fLastPercent = -1;
++	fLastFlags = -1;
++	fRtCount = 0;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -71,7 +247,6 @@ NegroniBattery::init(OSDictionary *dictionary)
+ 			return false;
+ 		}
+ 	}
+-	fLastMode = -1;
+ 	return true;
+ }
+ 
+@@ -89,161 +264,532 @@ NegroniBattery::putNumber(const char *key, UInt32 value)
+ 
+ void
+ NegroniBattery::putBool(const char *key, bool value)
++{
++	putObject(key, value ? kOSBooleanTrue : kOSBooleanFalse);
++}
++
++void
++NegroniBattery::putObject(const char *key, OSObject *value)
+ {
+ 	const OSSymbol *symbol = OSSymbol::withCString(key);
+-	if (symbol) {
+-		setPSProperty(symbol, value ? kOSBooleanTrue : kOSBooleanFalse);
+-		symbol->release();
++	if (symbol && value) {
++		setPSProperty(symbol, value);
+ 	}
++	OSSafeReleaseNULL(symbol);
+ }
+ 
+ void
+-NegroniBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+-    bool capable, bool charging, bool full, bool measured, bool currentValid)
++NegroniBattery::putString(const char *key, const char *value)
++{
++	OSString *s = OSString::withCString(value);
++	putObject(key, s);
++	OSSafeReleaseNULL(s);
++}
++
++static OSDictionary *
++nb_numbers(const char *const *keys, const UInt32 *values, unsigned count)
+ {
+-	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
+-	const unsigned capacity = (5020u * percent + 50u) / 100u;
++	OSDictionary *d = OSDictionary::withCapacity(count + 1);
++	for (unsigned i = 0; d && i < count; ++i) {
++		OSNumber *n = OSNumber::withNumber(values[i], 32);
++		if (n) {
++			d->setObject(keys[i], n);
++			n->release();
++		}
++	}
++	return d;
++}
++
++void
++NegroniBattery::publish(unsigned percent, unsigned mv, int ma, int centiC, bool external,
++    bool charging, bool full, int source, unsigned usbMv, int iinMa)
++{
++	const unsigned mah = (NB_DESIGN_MAH * percent + 50u) / 100u;
++	const bool measured = source != NB_SRC_STATIC;
+ 	setBatteryInstalled(true);
+-	setCurrentCapacity(capacity);
+-	setMaxCapacity(5020);
++	setCurrentCapacity(percent);
++	setMaxCapacity(100);
+ 	setExternalConnected(external);
+-	setExternalChargeCapable(capable);
++	setExternalChargeCapable(external);
+ 	setIsCharging(charging);
+ 	setAtWarnLevel(false);
+-	/* An uncalibrated voltage curve must not assert a critical shutdown. */
++	/* An estimated SOC must not assert a critical shutdown. */
+ 	setAtCriticalLevel(false);
+ 	setVoltage(mv);
+ 	setAmperage(ma);
+-	setTimeRemaining(-1); /* Unknown; never publish zero minutes on error. */
+-	setCycleCount(0);     /* Placeholder: cycle learning is not implemented. */
++	setTimeRemaining(0xffff); /* unknown (AppleSmartBattery's 65535); never zero minutes */
++	setCycleCount(0);         /* unknown without the gauge */
+ 	putBool("FullyCharged", full);
++	putBool("built-in", true);
+ 	putBool("AppleRawExternalConnected", external);
+-	putNumber("AppleRawCurrentCapacity", capacity);
+-	putNumber("AppleRawMaxCapacity", 5020);
+-	putNumber("DesignCapacity", 5020);
++	putNumber("AppleRawCurrentCapacity", mah);
++	putNumber("AppleRawMaxCapacity", NB_DESIGN_MAH);
++	putNumber("AppleRawBatteryVoltage", mv);
++	putNumber("NominalChargeCapacity", NB_DESIGN_MAH);
++	putNumber("DesignCapacity", NB_DESIGN_MAH);
++	putNumber("DesignCycleCount9C", 500);
+ 	putNumber("InstantAmperage", (UInt32)ma);
+-	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
+-	putNumber("Temperature", 2500);
++	putNumber("Temperature", (UInt32)centiC);  /* hundredths of a degree C */
++	putNumber("AvgTimeToEmpty", 0xffff);
++	putNumber("AvgTimeToFull", 0xffff);
++	putNumber("InstantTimeToEmpty", 0xffff);
++	putNumber("PermanentFailureStatus", 0);
++	putNumber("BatteryCellDisconnectCount", 0);
++	putBool("CapacityEstimated", true);
+ 	putBool("NegroniBatteryHardwareSampleValid", measured);
+-	putBool("NegroniBatteryCurrentValid", currentValid);
+-	putBool("NegroniBatterySOCEstimated", measured);
+-	putBool("NegroniBatteryTemperatureEstimated", true);
++	putBool("NegroniBatterySOCEstimated", true);
+ 	putBool("NegroniBatteryFallback", !measured);
++	putString("NegroniBatterySource", kSrcName[source]);
+ 	putNumber("NegroniBatteryPercent", percent);
++	putNumber("NegroniBatteryUSBInMillivolts", usbMv);
++	{
++		/* thermalmonitord/powerd read "BatteryData" (bergamota: "batteryData NULL" otherwise) */
++		static const char *const k[] = {"CycleCount", "DesignCapacity", "StateOfCharge", "Voltage",
++			                        "MaxCapacity", "NominalChargeCapacity", "Flags", "ResScale"};
++		const UInt32 v[] = {0, NB_DESIGN_MAH, percent, mv, NB_DESIGN_MAH, NB_DESIGN_MAH, 0, 1};
++		OSDictionary *d = nb_numbers(k, v, 8);
++		putObject("BatteryData", d);
++		OSSafeReleaseNULL(d);
++	}
++	{
++		/* AdapterDetails: FamilyCode 0 = disconnected; 0xe0004007 = kIOPSFamilyCodeUSBUnknown */
++		OSDictionary *d;
++		if (external) {
++			int cur = iinMa > 0 ? iinMa : 500;
++			unsigned volt = usbMv ? usbMv : 5000;
++			static const char *const k[] = {kIOPMPSAdapterDetailsVoltage, kIOPMPSAdapterDetailsAmperageKey,
++				                        kIOPMPSAdapterDetailsWattsKey, kIOPMPSAdapterDetailsSourceIDKey,
++				                        kIOPMPSAdapterDetailsFamilyKey};
++			const UInt32 v[] = {volt, (UInt32)cur, (UInt32)(((uint64_t)volt * (unsigned)cur + 500000) / 1000000),
++				            0, 0xe0004007u};
++			d = nb_numbers(k, v, 5);
++			if (d) {
++				d->setObject("IsWireless", kOSBooleanFalse);
++				OSString *s = OSString::withCString("usb");
++				if (s) {
++					d->setObject(kIOPMPSAdapterDetailsDescriptionKey, s);
++					s->release();
++				}
++			}
++		} else {
++			static const char *const k[] = {kIOPMPSAdapterDetailsFamilyKey};
++			const UInt32 v[] = {0};
++			d = nb_numbers(k, v, 1);
++		}
++		putObject(kIOPMPSAdapterDetailsKey, d);
++		OSSafeReleaseNULL(d);
++	}
+ 
+ 	/* IOPMCopyBatteryInfo's per-source compatibility dictionary. */
+-	OSDictionary *legacy = OSDictionary::withCapacity(7);
+-	if (legacy) {
+-		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
+-		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
+-		    kIOBatteryFlagsKey};
+-		UInt32 values[] = {capacity, 5020, mv, (UInt32)ma, 0,
+-		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
+-		    (charging ? kIOBatteryCharge : 0))};
+-		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+-			OSNumber *number = OSNumber::withNumber(values[i], 32);
+-			if (number) {
+-				legacy->setObject(keys[i], number);
+-				number->release();
+-			}
++	{
++		static const char *const k[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
++			                        kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
++			                        kIOBatteryFlagsKey};
++		const UInt32 v[] = {mah, NB_DESIGN_MAH, mv, (UInt32)ma, 0,
++			            (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
++			            (charging ? kIOBatteryCharge : 0))};
++		OSDictionary *legacy = nb_numbers(k, v, 6);
++		if (legacy) {
++			setLegacyIOBatteryInfo(legacy);
++			legacy->release();
+ 		}
+-		setLegacyIOBatteryInfo(legacy);
+-		legacy->release();
+ 	}
+-	updateStatus(); /* Flush PS properties and send 0xe0024100 on change. */
+-	int mode = measured ? 1 : 0;
+-	if (mode != fLastMode) {
+-		IOLog("NEGRONI BATTERY: %s, %u%% %umV external=%d charging=%d\n",
+-		    measured ? "PM6150 / estimated SOC" : "static fallback",
+-		    percent, mv, external, charging);
+-		fLastMode = mode;
++	updateStatus(); /* Flush PS properties and send kIOPMMessageBatteryStatusHasChanged on change. */
++
++	int flags = (external ? 1 : 0) | (charging ? 2 : 0) | (full ? 4 : 0) | (source << 3);
++	if ((int)percent != fLastPercent || flags != fLastFlags) {
++		IOLog("NEGRONI BATTERY: %u%% %umV %dmA %d.%02dC external=%d charging=%d full=%d source=%s usbin=%umV\n",
++		    percent, mv, ma, centiC / 100, (centiC < 0 ? -centiC : centiC) % 100,
++		    external, charging, full, kSrcName[source], usbMv);
++		fLastPercent = (int)percent;
++		fLastFlags = flags;
+ 	}
+ }
+ 
+-/* Keep the proven single-byte observer command. Read two matching whole
+- * words to reject most torn ADC samples without writing the QG HOLD bit.
+- * This is a bounded consistency check, not a hardware snapshot guarantee. */
+-bool
+-NegroniBattery::readWord(unsigned address, uint16_t *value)
++/* One ADC7 conversion, as Linux adc7_configure + adc7_do_conversion. 0 = ok. Needs the VADC unlock. */
++int
++NegroniBattery::adcCode(const nb_chan &c, uint16_t *code)
+ {
+-	uint16_t previous = 0;
+-	for (unsigned attempt = 0; attempt < 4; ++attempt) {
+-		uint8_t lo, hi;
+-		if (negroni_spmi_read(0, address, &lo) ||
+-		    negroni_spmi_read(0, address + 1, &hi)) {
+-			return false;
++	uint8_t v, b[4], status = 0, lo, hi;
++	if (negroni_spmi_read(0, ADC_BASE + ADC_APP_SID, &v) ||
++	    negroni_spmi_write(0, ADC_BASE + ADC_APP_SID, (uint8_t)((v & ~0x0fu) | (c.sid & 0x0fu)))) {
++		return -1;
++	}
++	for (unsigned i = 0; i < 4; ++i) {
++		if (negroni_spmi_read(0, ADC_BASE + ADC_DIG_PARAM + i, &b[i])) {
++			return -1;
+ 		}
+-		uint16_t next = (uint16_t)((unsigned)lo | ((unsigned)hi << 8));
+-		if (attempt && next == previous) {
+-			*value = next;
++	}
++	/* timer calibration (0), cal_sel ratiometric 1 / absolute 2, decimation 2 (ADC5_DECIMATION_DEFAULT) */
++	b[0] = (uint8_t)((b[0] & ~0x7cu) | ((c.ratiometric ? 1u : 2u) << 4) | (2u << 2));
++	b[1] = (uint8_t)(b[1] & ~0x07u);                  /* 1 sample */
++	b[2] = c.chan;
++	b[3] = (uint8_t)((b[3] & ~0x0fu) | (c.settle & 0x0fu));
++	for (unsigned i = 0; i < 4; ++i) {
++		if (negroni_spmi_write(0, ADC_BASE + ADC_DIG_PARAM + i, b[i])) {
++			return -1;
++		}
++	}
++	if (negroni_spmi_write(0, ADC_BASE + ADC_CONV_REQ, 0x80)) {
++		return -1;
++	}
++	/* Linux waits up to 10 ms for the end-of-conversion interrupt; poll EOC for up to 20 ms. */
++	IODelay(300);
++	for (unsigned i = 0; i < 200; ++i) {
++		if (negroni_spmi_read(0, ADC_BASE + ADC_STATUS1, &status)) {
++			return -1;
++		}
++		if ((status & 0x03u) == 0x01u) {
++			break;
++		}
++		IODelay(100);
++	}
++	if (status & 0x80u) {
++		return -2;                                        /* CONV_FAULT */
++	}
++	if ((status & 0x03u) != 0x01u) {
++		return -4;                                        /* no end of conversion */
++	}
++	if (negroni_spmi_read(0, ADC_BASE + ADC_DATA0, &lo) || negroni_spmi_read(0, ADC_BASE + ADC_DATA0 + 1, &hi)) {
++		return -1;
++	}
++	*code = (uint16_t)(lo | (hi << 8));
++	return *code == 0x8000 ? -3 : 0;                      /* ADC5_USR_DATA_CHECK */
++}
++
++/* Absolute channel: the pre-scaled quantity in micro-units (uV, or uA for the current channels). */
++bool
++NegroniBattery::adcMicro(const nb_chan &c, int64_t *value)
++{
++	uint16_t code;
++	if (adcCode(c, &code)) {
++		return false;
++	}
++	int64_t uv = code > 0x7fff ? 0 : (int64_t)code * 1875 * 1000 / ADC_FULL_SCALE;
++	*value = uv * c.den / c.num;
++	return true;
++}
++
++/* Ratiometric 100 k NTC channel -> hundredths of a degree C (Linux qcom_vadc7_scale_hw_calib_therm). */
++bool
++NegroniBattery::adcTemp(const nb_chan &c, int *centiC)
++{
++	uint16_t code;
++	if (adcCode(c, &code) || code == 0 || code >= ADC_RATIO_MAX) {
++		return false;
++	}
++	int64_t r = (int64_t)code * 100000 / (ADC_RATIO_MAX - code);
++	const unsigned n = sizeof(kNtc) / sizeof(kNtc[0]);
++	if (r >= kNtc[0].r || r <= kNtc[n - 1].r) {
++		return false;                                     /* outside -20..82 C: not trusted */
++	}
++	for (unsigned i = 1; i < n; ++i) {
++		if (r > kNtc[i].r) {
++			int64_t t = kNtc[i - 1].t + (kNtc[i].t - kNtc[i - 1].t) * (kNtc[i - 1].r - r) /
++			    (kNtc[i - 1].r - kNtc[i].r);
++			*centiC = (int)(t / 10);
+ 			return true;
+ 		}
+-		previous = next;
+ 	}
+ 	return false;
+ }
+ 
+-unsigned
+-NegroniBattery::estimatePercent(unsigned mv)
++int32_t
++NegroniBattery::socFromOcv(int32_t mv)
+ {
+-	/* Generic single-cell curve, intentionally NOT advertised as QG SOC.
+-	 * Load sag, temperature, aging and charging introduce large errors. */
+-	static const unsigned volts[] = {3400, 3500, 3600, 3700, 3800, 3900,
+-	    4000, 4100, 4200, 4350};
+-	static const unsigned soc[] = {1, 5, 10, 20, 40, 60, 75, 85, 93, 100};
+-	if (mv <= volts[0]) {
+-		return soc[0];
+-	}
+-	for (unsigned i = 1; i < sizeof(volts) / sizeof(volts[0]); ++i) {
+-		if (mv < volts[i]) {
+-			return soc[i - 1] + (mv - volts[i - 1]) * (soc[i] - soc[i - 1]) /
+-			       (volts[i] - volts[i - 1]);
++	const unsigned n = sizeof(kOcv) / sizeof(kOcv[0]);
++	if (mv <= kOcv[0].mv) {
++		return 0;
++	}
++	for (unsigned i = 1; i < n; ++i) {
++		if (mv < kOcv[i].mv) {
++			return kOcv[i - 1].soc + (mv - kOcv[i - 1].mv) * (kOcv[i].soc - kOcv[i - 1].soc) /
++			       (kOcv[i].mv - kOcv[i - 1].mv);
+ 		}
+ 	}
+-	return 100;
++	return 10000;
++}
++
++/*
++ * PM8350B BCL VBAT/IBAT: reads only, BCL_READS samples each, 1 ms apart (the work loop thread
++ * sleeps). The values are used only when the monitor is on (MONITOR_EN bit 7: Linux sets it at
++ * probe, we never write it); with the monitor off they go to the raw log line only.
++ * IBAT 0 means "no new reading" (bcl_read_ibat keeps the last value), so it is averaged over the
++ * non-zero samples.
++ */
++void
++NegroniBattery::readBcl(nb_sample &s)
++{
++	if (negroni_spmi_read(BCL_SID, BCL_BASE + BCL_MONITOR_EN, &s.bclMon) ||
++	    negroni_spmi_read(BCL_SID, BCL_BASE + BCL_VBAT_CONV_REQ, &s.bclConv)) {
++		return;
++	}
++	s.bclRead = true;
++	s.bclOn = (s.bclMon & 0x80u) != 0;
++	int32_t vsum = 0, isum = 0;
++	unsigned vn = 0, in = 0, nonzero = 0;
++	for (unsigned i = 0; i < BCL_READS; ++i) {
++		uint8_t v;
++		if (s.bclConv && !negroni_spmi_read(BCL_SID, BCL_BASE + BCL_VBAT_READ, &v) && v != BCL_VBAT_NONE && v != 0) {
++			vsum += v;
++			vn++;
++		}
++		if (!negroni_spmi_read(BCL_SID, BCL_BASE + BCL_IBAT_READ, &v)) {
++			in++;
++			if (v != 0) {
++				isum += (int8_t)v;   /* two's complement (bcl_read_ibat sign_extend32(val, 7)) */
++				nonzero++;
++			}
++		}
++		IOSleep(1);
++	}
++	if (vn >= BCL_READS / 2) {
++		int32_t mv = (int32_t)((int64_t)vsum * BCL_VBAT_UV / ((int64_t)vn * 1000));
++		if (mv > 5000) {
++			mv /= 2;              /* the pack, not the 1S side: 2S (DT qcom,vbatt_num 2) [inference] */
++			s.bclPack = true;
++		}
++		s.bclVbatMv = mv;
++		s.bclVbatN = vn;
++		s.bclVbatOk = s.bclOn && mv >= 2500 && mv <= 4700;
++	}
++	if (in >= BCL_READS / 2) {
++		/* + = discharge in the BCL; IOPMPowerSource wants + = charging */
++		s.bclIbatMa = nonzero ? -(int32_t)((int64_t)isum * BCL_IBAT_UA / ((int64_t)nonzero * 1000)) : 0;
++		s.bclIbatNonzero = nonzero;
++		s.bclIbatOk = s.bclOn;
++	}
++}
++
++/* PMK8350 VADC conversions (negronibatt=4/5 only; the writes are unlocked in start). */
++void
++NegroniBattery::readVadc(nb_sample &s)
++{
++	int64_t sum = 0, v;
++	unsigned good = 0;
++	for (unsigned i = 0; i < 4; ++i) {
++		if (adcMicro(kVbat, &v)) {
++			sum += v;
++			good++;
++		}
++	}
++	if (good) {
++		s.adcVbatMv = (int32_t)(sum / good / 1000);
++		s.adcVbatN = good;
++		s.adcVbatOk = s.adcVbatMv >= 2500 && s.adcVbatMv <= 4700;
++	}
++	int64_t usbUv = 0, ichgUa = 0, iinUa = 0;
++	s.usbOk = adcMicro(kUsbIn, &usbUv);
++	s.ichgOk = adcMicro(kIchg, &ichgUa);
++	s.iinOk = adcMicro(kIin, &iinUa);
++	s.tempOk = adcTemp(kSkin, &s.centiC);
++	s.usbMv = s.usbOk ? (unsigned)(usbUv / 1000) : 0;
++	s.ichgMa = s.ichgOk ? (int32_t)(ichgUa / 1000) : 0;
++	s.iinMa = s.iinOk ? (int32_t)(iinUa / 1000) : 0;
++}
++
++/*
++ * negronibatt=2/5, once: every SID 3 (PM8350B) peripheral of the APID map. Only SID 3: no other
++ * kernel user reads a SID 3 APID (the keys read SID 1 GPIO 0x18d on their own thread).
++ */
++void
++NegroniBattery::census(void)
++{
++	static uint16_t ppids[1024];
++	static uint8_t owners[1024];
++	unsigned n = negroni_spmi_ppids(ppids, owners, 1024);
++	char line[200];
++	int m = 0;
++	unsigned shown = 0;
++	IOLog("NEGRONI BATTERY: census: %u APIDs on bus 0 (ppid type/subtype rt_sts owner)\n", n);
++	for (unsigned i = 0; i < n; ++i) {
++		unsigned sid = ppids[i] >> 8;
++		if (sid != 3) {
++			continue;
++		}
++		uint8_t type = 0xff, sub = 0xff, rt = 0xff;
++		unsigned base = (ppids[i] & 0xffu) << 8;
++		(void)negroni_spmi_read(sid, base + 0x04, &type);
++		(void)negroni_spmi_read(sid, base + 0x05, &sub);
++		(void)negroni_spmi_read(sid, base + 0x10, &rt);
++		if (sid == 3 && fRtCount < NB_RT_MAX) {
++			fRtPpid[fRtCount] = ppids[i];
++			fRtLast[fRtCount] = rt;
++			fRtCount++;
++		}
++		m += snprintf(line + m, sizeof(line) - (size_t)m, " %03x %02x/%02x %02x e%u", ppids[i], type, sub, rt, owners[i]);
++		if (++shown % 7 == 0 || m > (int)sizeof(line) - 28) {
++			IOLog("NEGRONI BATTERY: census%s\n", line);
++			m = 0;
++		}
++	}
++	if (m) {
++		IOLog("NEGRONI BATTERY: census%s\n", line);
++	}
++}
++
++/* negronibatt=2/5, each poll: a line for each PM8350B peripheral whose INT_RT_STS changed (plug a cable to find VBUS). */
++void
++NegroniBattery::rtChanges(void)
++{
++	for (unsigned i = 0; i < fRtCount; ++i) {
++		uint8_t rt;
++		unsigned base = (fRtPpid[i] & 0xffu) << 8;
++		if (negroni_spmi_read(3, base + 0x10, &rt) || rt == fRtLast[i]) {
++			continue;
++		}
++		IOLog("NEGRONI BATTERY: rt_sts %03x (0x%04x+0x10): 0x%02x -> 0x%02x\n", fRtPpid[i], base, fRtLast[i], rt);
++		fRtLast[i] = rt;
++	}
+ }
+ 
+ void
+ NegroniBattery::poll(void)
+ {
+-	uint8_t type, present, usb, path, charger, error, temperature;
+-	uint16_t rawVoltage;
+-	bool valid = fReal &&
+-	    !negroni_spmi_read(0, 0x4804, &type) && type == 0x0d &&
+-	    !negroni_spmi_read(0, 0x4808, &present) && (present & 1u) &&
+-	    readWord(0x48c0, &rawVoltage) && rawVoltage != 0x8000 &&
+-	    !negroni_spmi_read(0, 0x1310, &usb) &&
+-	    !negroni_spmi_read(0, 0x110b, &path) &&
+-	    !negroni_spmi_read(0, 0x1006, &charger) &&
+-	    !negroni_spmi_read(0, 0x1007, &error) &&
+-	    !negroni_spmi_read(0, 0x100d, &temperature);
+-	unsigned mv = valid ? (unsigned)(((uint64_t)rawVoltage * 194637u) / 1000000u) : 0;
+-	/* Zero, reset, floating, or implausible data cannot become 0% battery. */
+-	valid = valid && mv >= 2800 && mv <= 4600;
+-	if (!valid) {
+-		publish(100, 4200, 0, true, true, false, true, false, false);
++	if (!fReal) {
++		publish(100, 4200, 0, 2500, true, false, true, NB_SRC_STATIC, 5000, 0);
+ 		return;
+ 	}
+-	bool external = (usb & 0x10u) != 0;
+-	bool capable = external && (path & 0x10u) && (path & 1u) && !(path & 0x40u);
+-	unsigned state = charger & 7u;
+-	bool charging = capable && state >= 1 && state <= 4 &&
+-	    !(error & 2u) && !(temperature & 0x0cu);
+-	/* Inhibit (0) does not by itself establish full capacity. */
+-	bool full = external && state == 5 && !(error & 2u);
+-	int ma = 0;
+-	uint8_t subtype;
+-	uint16_t rawCurrent;
+-	bool currentValid = !negroni_spmi_read(0, 0x4805, &subtype) &&
+-	    (subtype == 3 || subtype == 4) && readWord(0x48c2, &rawCurrent) &&
+-	    rawCurrent != 0x8000;
+-	if (currentValid) {
+-		int signedRaw = (rawCurrent & 0x8000u) ? (int)rawCurrent - 65536 : (int)rawCurrent;
+-		/* Linux: negative=charging; IOPMPowerSource: positive=charging, mA. */
+-		ma = (int)(-((int64_t)signedRaw * (subtype == 3 ? 152588 : 305176)) / 1000000);
+-	}
+-	publish(full ? 100 : estimatePercent(mv), mv, ma, external, capable,
+-	    charging, full, true, currentValid);
++	if (fDiag) {
++		if (!fCensusDone) {
++			fCensusDone = true;
++			census();
++		} else {
++			rtChanges();
++		}
++	}
++	nb_sample s = {};
++	s.centiC = 2500;
++	readBcl(s);
++	if (fVadc) {
++		readVadc(s);
++	}
++	fIbatSeen = fIbatSeen || (s.bclIbatOk && s.bclIbatNonzero);
++
++	/* Voltage: the VADC if it measured, else the BCL. */
++	int source = s.adcVbatOk ? NB_SRC_VADC : s.bclVbatOk ? NB_SRC_BCL : NB_SRC_STATIC;
++	int32_t vbat = s.adcVbatOk ? s.adcVbatMv : s.bclVbatMv;
++	/* Battery current, + = charging: the BCL IBAT once it gave a non-zero value, else the VADC charge current on VBUS. */
++	bool curKnown = false;
++	int32_t cur = 0;
++	if (s.bclIbatOk && fIbatSeen) {
++		curKnown = true;
++		cur = s.bclIbatMa;
++	} else if (s.usbOk && s.usbMv >= NB_EXT_MV && s.ichgOk) {
++		curKnown = true;
++		cur = s.ichgMa;
++	}
++	/* Charger: VBUS when the VADC measures it; else the current direction with hysteresis (full on a charger: ~0 mA keeps the state). */
++	if (s.usbOk) {
++		fExternal = s.usbMv >= NB_EXT_MV;
++	} else if (curKnown) {
++		if (cur >= NB_CUR_MA) {
++			fExternal = true;
++		} else if (cur <= -NB_CUR_MA) {
++			fExternal = false;
++		}
++	} else {
++		fExternal = false;
++	}
++	const bool external = fExternal;
++
++	if (fDiag) {
++		int64_t vph = 0, mid = 0;
++		bool vphOk = fVadc && adcMicro(kVph, &vph), midOk = fVadc && adcMicro(kVbatMid, &mid);
++		IOLog("NEGRONI BATTERY: raw bcl mon %02x conv %02x vbat %s%dmV (%u/%d%s) ibat %s%dmA (%u nonzero) | "
++		    "vadc vbat %s%dmV (%u/4) vph %s%dmV mid2s %s%dmV usbin %s%umV ichg %s%dmA iin %s%dmA skin %s%d | "
++		    "cur %s%d ext %d soc %d\n",
++		    s.bclMon, s.bclConv, s.bclVbatOk ? "" : "?", s.bclVbatMv, s.bclVbatN, BCL_READS, s.bclPack ? " pack/2" : "",
++		    s.bclIbatOk ? "" : "?", s.bclIbatMa, s.bclIbatNonzero,
++		    s.adcVbatOk ? "" : "?", s.adcVbatMv, s.adcVbatN, vphOk ? "" : "?", (int)(vph / 1000), midOk ? "" : "?",
++		    (int)(mid / 1000), s.usbOk ? "" : "?", s.usbMv, s.ichgOk ? "" : "?", s.ichgMa, s.iinOk ? "" : "?", s.iinMa,
++		    s.tempOk ? "" : "?", s.centiC, curKnown ? "" : "?", cur, external, fSoc);
++	}
++	if (source == NB_SRC_STATIC) {
++		/* Keep the last estimate; with no estimate yet, the static fallback (the reason after 3 failed polls). */
++		++fFailPolls;
++		if (!fHaveSoc) {
++			if (fFailPolls >= 3 && !fNoDataLogged) {
++				fNoDataLogged = true;
++				IOLog("NEGRONI BATTERY: no battery voltage: BCL %s (MONITOR_EN 0x%02x VBAT_CONV_REQ 0x%02x), VADC %s; "
++				    "static 100%%%s\n", s.bclRead ? "read" : "unreadable", s.bclMon, s.bclConv,
++				    fVadc ? (s.adcVbatN ? "out of range" : "no conversion") : "off",
++				    fVadc ? "" : " (negronibatt=4 measures with the VADC)");
++			}
++			publish(100, 4200, 0, 2500, true, false, true, NB_SRC_STATIC, s.usbMv, s.iinMa);
++		}
++		return;
++	}
++	fFailPolls = 0;
++
++	uint64_t now, ns;
++	clock_get_uptime(&now);
++	absolutetime_to_nanoseconds(now, &ns);
++	int64_t dtS = fLastNs ? (int64_t)((ns - fLastNs) / 1000000000ull) : 0;
++	fLastNs = ns;
++	if (dtS < 0 || dtS > 600) {
++		dtS = NB_POLL_MS / 1000;
++	}
++
++	/* Open-circuit voltage: the terminal voltage minus I x R (charging raises it, a load lowers it). */
++	int32_t ocv = vbat;
++	if (curKnown) {
++		int32_t drop = cur * NB_R_MOHM / 1000;
++		drop = drop > NB_IR_MAX_MV ? NB_IR_MAX_MV : drop < -NB_IR_MAX_MV ? -NB_IR_MAX_MV : drop;
++		ocv -= drop;
++	}
++	int32_t target = socFromOcv(ocv);
++	bool full = false;
++	if (!fHaveSoc) {
++		fSoc = target;
++		fHaveSoc = true;
++	} else {
++		/* Coulomb counting of the battery current, then a slow pull toward the voltage value. */
++		int32_t cc = curKnown ? (int32_t)((int64_t)cur * dtS * 10000 / (3600 * NB_DESIGN_MAH)) : 0;
++		int32_t next = fSoc + cc;
++		next += (target - next) / (curKnown ? 32 : 8);
++		if (external) {
++			/* Taper at the float voltage: the cell is full. */
++			if (curKnown && cur < NB_FULL_MA && vbat >= NB_TAPER_MV && next < fSoc + 100) {
++				next = fSoc + 100;
++			}
++			if (next < fSoc) {
++				next = fSoc;              /* never down on a charger */
++			}
++		} else {
++			if (next > fSoc) {
++				next = fSoc;              /* never up on battery */
++			}
++			/* At most 1 %/min below what the coulomb count explains (load sag). */
++			int32_t cap = (int32_t)(dtS * 100 / 60) + (cc < 0 ? -cc : 0);
++			if (cap < 1) {
++				cap = 1;
++			}
++			if (fSoc - next > cap) {
++				next = fSoc - cap;
++			}
++		}
++		fSoc = next > 10000 ? 10000 : next < 0 ? 0 : next;
++	}
++	/* Report 0 % only below the DT power-off voltage for 5 polls in a row on battery. */
++	fLowPolls = (!external && vbat < NB_POWER_OFF_MV) ? fLowPolls + 1 : 0;
++	if (fSoc < 100 && fLowPolls < 5) {
++		fSoc = 100;
++	}
++	unsigned percent = (unsigned)((fSoc + 50) / 100);
++	if (percent > 100) {
++		percent = 100;
++	}
++	full = external && fSoc >= 10000 && (!curKnown || cur < NB_FULL_MA);
++	bool charging = external && !full && (curKnown ? cur > NB_CUR_MA : percent < 100);
++	/* Skin temperature as the battery's (VADC only); clamped so an outlier cannot stop charging in iOS. */
++	int centiC = s.tempOk ? (s.centiC < 0 ? 0 : s.centiC > 4500 ? 4500 : s.centiC) : 2500;
++	putBool("NegroniBatteryTemperatureEstimated", true);
++	putBool("NegroniBatteryCurrentValid", curKnown);
++	putNumber("NegroniBatteryChargeCurrent", (UInt32)s.ichgMa);
++	putNumber("NegroniBatteryInputCurrent", (UInt32)s.iinMa);
++	putNumber("NegroniBatteryBCLMonitor", s.bclMon);
++	publish(percent, (unsigned)vbat, curKnown ? cur : 0, centiC, external, charging, full, source, s.usbMv, s.iinMa);
+ }
+ 
+ void
+@@ -252,19 +798,41 @@ NegroniBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
+ 	NegroniBattery *self = OSDynamicCast(NegroniBattery, owner);
+ 	if (self && self->fRunning) {
+ 		self->poll();
+-		sender->setTimeoutMS(30000);
++		sender->setTimeoutMS(NB_POLL_MS);
+ 	}
+ }
+ 
+ bool
+ NegroniBattery::start(IOService *provider)
+ {
++	int mode = NB_READONLY;
++	(void)PE_parse_boot_argn("negronibatt", &mode, sizeof(mode));
++	if (mode == NB_OFF) {
++		IOLog("NEGRONI BATTERY: negronibatt=0: no power source\n");
++		return false;
++	}
+ 	if (!IOPMPowerSource::start(provider)) {
+ 		return false;
+ 	}
+-	int real = 0;
+-	(void)PE_parse_boot_argn("negronibattery", &real, sizeof(real));
+-	fReal = real == 1 && negroni_spmi_init() == 0;
++	fMode = (mode >= NB_READONLY && mode <= NB_VADC_DIAG) ? mode : NB_READONLY;
++	fDiag = fMode == NB_RO_DIAG || fMode == NB_VADC_DIAG;
++	fReal = fMode != NB_STATIC && negroni_spmi_init() == 0;
++	fVadc = fReal && (fMode == NB_VADC || fMode == NB_VADC_DIAG) && negroni_spmi_vadc_unlock();
++	if (fReal) {
++		unsigned owner = 7;
++		int apid = negroni_spmi_apid(BCL_SID, BCL_BASE >> 8, &owner);
++		uint8_t type = 0xff, sub = 0xff, mon = 0xff, conv = 0xff;
++		(void)negroni_spmi_read(BCL_SID, BCL_BASE + 0x04, &type);
++		(void)negroni_spmi_read(BCL_SID, BCL_BASE + 0x05, &sub);
++		(void)negroni_spmi_read(BCL_SID, BCL_BASE + BCL_MONITOR_EN, &mon);
++		(void)negroni_spmi_read(BCL_SID, BCL_BASE + BCL_VBAT_CONV_REQ, &conv);
++		IOLog("NEGRONI BATTERY: negronibatt=%d, %s%s; BCL APID %d EE %u type/subtype %02x/%02x MONITOR_EN %02x "
++		    "VBAT_CONV_REQ %02x\n", fMode, fVadc ? "BCL + VADC" : "read-only BCL",
++		    (fMode == NB_VADC || fMode == NB_VADC_DIAG) && !fVadc ? " (VADC refused)" : "", apid, owner,
++		    type, sub, mon, conv);
++	} else {
++		IOLog("NEGRONI BATTERY: negronibatt=%d, static 100%% (no PMIC access)\n", fMode);
++	}
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {
+@@ -273,7 +841,7 @@ NegroniBattery::start(IOService *provider)
+ 		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
+ 			fTimerAdded = true;
+ 			fRunning = true;
+-			fTimer->setTimeoutMS(30000);
++			fTimer->setTimeoutMS(NB_POLL_MS);
+ 		} else {
+ 			fReal = false;
+ 			poll();
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 32acbf8..64ce18b 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -93,6 +93,11 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = NegroniHIDTouch;"
+     "   },"
++    "   {"
++    "     'IOClass'         = NegroniBattery;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = NegroniBattery;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
