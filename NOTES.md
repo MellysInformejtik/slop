@@ -947,3 +947,8 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 
 ## 2026-10-26 factory GPT restored for LineageOS (user request)
 - From OrangeFox: `sgdisk --load-backup` of the 22 Oct original (`Downloads/negroni-install-gpt-backup/sda-gpt.bin`, b919ff2f). After reboot: sda14 userdata LBA 2839276..30271482 = 104.6 GiB, hmdata gone, verify clean (usual 2 warnings). iOS root and HarmonyOS data are lost. Pre-restore table: `~/ios-work/negroni-gpt/sda-gpt-before-lineage-1026.bin`. HarmonyOS images were not flashed by the agent (user flashed manually, or not at all). Next: user formats data and installs LineageOS.
+
+## 2026-10-31 iOSPlus10 series on iOS 18 (user: "make the ios 27 bootable ... copy from there the patchers")
+- iOSPlus10 (akshaynexus, 146e889, MIT) has no iOS 27: its booting kernel is the same xnu-8796 (iOS 16 userland), iOS 26 only compiles. User chose: port into our iOS 18; userdata wipe approved for the flash.
+- Commit 1c1c860 (local): `negroni-ios/xnu/patches-iosplus10/` = their patches/xnu 0200-0402 + their 0046/0056/0061 + `0500-ios18-userland.patch` (our 0126 merged onto their series by hand: their sandbox-extension/wrap code, plus iOS 18 lock-result layout, 0x514 swap record translation, surface values/bulk attachments, op 0x43). CI input `iosplus10` (drops 0127-gpu-show). Local apply check (`~/ios-work/ios18plus/verify.sh`): same skips as upstream only. NOT compiled yet (needs CI push).
+- Not done: 0129 Metal ABI (UniXNU NativeMetal user client) vs their NegroniMetal path; their Metal userland (userland/metal) is built for iOS 16 20H392; Mu 0002 7 GiB RAM + their boot-args (config/negroni-ne2211.toml); root = ~/ios-work/ios18-root-23g.img. 0118 + copied patches: "HackiOS" in comments -> "oosexgang".

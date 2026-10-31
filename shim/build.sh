@@ -4,8 +4,10 @@
 #   DTB=path                          DTB for the boot image (default per board)
 set -euo pipefail
 cd "$(dirname "$0")"
-CC=aarch64-linux-gnu-gcc
-OBJCOPY=aarch64-linux-gnu-objcopy
+CC=${CC:-aarch64-linux-gnu-gcc}
+OBJCOPY=${OBJCOPY:-aarch64-linux-gnu-objcopy}
+READELF=${READELF:-aarch64-linux-gnu-readelf}
+NM=${NM:-aarch64-linux-gnu-nm}
 BOARD=${BOARD:-sweet}
 case "$BOARD" in
 sweet) DTB=${DTB:-../dtb/boot_unpacked/dtb}; BOARD_DEF= ;;
@@ -15,20 +17,20 @@ negroni) DTB=${DTB:-../dtb/negroni/dtb}; BOARD_DEF=-DBOARD_NEGRONI ;;
 esac
 [ -f "$DTB" ] || { echo "error: $DTB missing (set DTB=...)" >&2; exit 1; }
 # EXTRA_CFLAGS=-DPROBE_RESET_NOW: negroni liveness test (see shim_main)
-CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra $BOARD_DEF ${EXTRA_CFLAGS:-}"
+CFLAGS="-O2 -ffreestanding -nostdlib -fpie -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra $BOARD_DEF ${EXTRA_CFLAGS:-}"
 mkdir -p out
 for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
 done
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$(aarch64-linux-gnu-readelf -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o | grep -c ABS64 || true)
+abs=$($READELF -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 $CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
 	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o -o out/shim.elf
 $OBJCOPY -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
-size=$(aarch64-linux-gnu-nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
+size=$($NM out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
 truncate -s "$size" out/Image
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio (ABL dislikes a zero-size ramdisk on some builds) -> diagnostics.

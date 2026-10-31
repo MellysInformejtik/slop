@@ -59,6 +59,12 @@ static struct utrd utrl[32] __attribute__((aligned(1024)));
 static struct ucd ucd __attribute__((aligned(128)));
 static uint8_t data[2 * BLOCK] __attribute__((aligned(4096)));
 
+static int streq(const char *a, const char *b)
+{
+	while (*a && *a == *b) { a++; b++; }
+	return (unsigned char)*a == (unsigned char)*b;
+}
+
 static uint64_t ticks(void)
 {
 	uint64_t t;
@@ -185,8 +191,7 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent)
 		if (((last - first + 1) >> 8) < 64)	/* keep the screen to the big ones */
 			continue;
 		con_hex2(name, "lba=", (uint32_t)first, "MiB=", (uint32_t)((last - first + 1) >> 8));
-		if (!__builtin_strcmp(name, "userdata") || !__builtin_strcmp(name, "cust") ||
-		    !__builtin_strcmp(name, "cache"))
+		if (streq(name, "userdata") || streq(name, "cust") || streq(name, "cache"))
 			con_str(" fs", fs_type((uint32_t)first));
 	}
 }

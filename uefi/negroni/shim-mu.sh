@@ -21,7 +21,8 @@ if [ -n "${ESP:-}" ]; then
 else
 	truncate -s 16M "$rd"	# ABL hangs on small ramdisks
 fi
-out=$repo/shim/out/negroni-uefi/shim-mu-debug-v4.img
+out=${OUT:-$repo/shim/out/negroni-uefi/shim-mu-debug-v4.img}
+mkdir -p "$(dirname "$out")"
 mkbootimg --kernel "$repo/shim/out/Image" --ramdisk "$rd" --header_version 4 --pagesize 4096 \
 	--os_version 12.0.0 --os_patch_level 2026-03-00 --cmdline bootconfig -o "$out"
 rm -f "$rd"
