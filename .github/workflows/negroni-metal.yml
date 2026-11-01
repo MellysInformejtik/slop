@@ -1,0 +1,82 @@
+name: negroni-metal
+
+# NegroniMetal.bundle for the iOS userland on negroni, built with iOSPlus10's own scripts at a pinned
+# commit: Turnip on the negroni msm KMD (scripts/gpu/turnip-build.sh), metal2vulkan bridge
+# (scripts/metal/build-bridge.sh) and the ios-flame Metal frontend with their patches (scripts/metal/build.sh).
+# The kernel side (IOAcceleratorES MetalPluginName = NegroniMetal, RedwoodGPU) is
+# negroni-ios/xnu/patches-iosplus10 (0205, 0230-0235). Output: out/metal/stage (root-add-metal.sh layout).
+# All inputs are MIT / GPL / LGPL sources; nothing from Apple is in the artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ios_min:
+        description: deployment target of the plugin and probes
+        default: "16.0"
+
+env:
+  IOSPLUS10_REPO: https://github.com/akshaynexus/iOSPlus10.git
+  IOSPLUS10_COMMIT: 146e889
+
+jobs:
+  metal:
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+      - name: Tools
+        run: |
+          brew install meson ninja cmake llvm bison flex glslang vulkan-headers ldid
+          rustup toolchain install 1.98.0 --profile minimal --target aarch64-apple-ios
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: iOSPlus10 (pinned) + the submodules the Metal path reads
+        run: |
+          P="$RUNNER_TEMP/iOSPlus10"
+          git clone -q "$IOSPLUS10_REPO" "$P"
+          git -C "$P" checkout -q "$IOSPLUS10_COMMIT"
+          git -C "$P" submodule update --init external/ios-flame external/metal2vulkan external/hackios-xnu-userland
+          git -C "$P" submodule status
+          echo "P=$P" >> "$GITHUB_ENV"
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+
+      - name: Mesa archive + Python tools (meson, mako, pyyaml, packaging)
+        run: |
+          cd "$P"
+          bash scripts/gpu/mesa-fetch.sh
+
+      - name: Turnip (libvulkan_freedreno.dylib, msm KMD)
+        run: |
+          cd "$P"
+          bash scripts/gpu/turnip-build.sh || { tail -80 out/gpu/turnip/*.log 2>/dev/null; exit 1; }
+
+      - name: metal2vulkan + ios-flame frontend sources
+        run: |
+          cd "$P"
+          bash scripts/metal/fetch-sources.sh
+
+      - name: metal2vulkan bridge (aarch64-apple-ios)
+        run: |
+          cd "$P"
+          bash scripts/metal/build-bridge.sh ios
+
+      - name: NegroniMetal plugin + probes
+        run: |
+          cd "$P"
+          IOS_MIN="${{ inputs.ios_min }}" bash scripts/metal/build.sh
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out/logs
+          cp -R "$P/out/metal/stage" out/ 2>/dev/null || true
+          find "$P/out" -name "*.log" -size -20M -exec cp {} out/logs/ \; 2>/dev/null || true
+          ls -laR out | head -80
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: negroni-metal
+          path: out
