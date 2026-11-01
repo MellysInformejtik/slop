@@ -16,7 +16,7 @@ on:
 
 env:
   IOSPLUS10_REPO: https://github.com/akshaynexus/iOSPlus10.git
-  IOSPLUS10_COMMIT: 146e889
+  IOSPLUS10_COMMIT: "146e889430bab755329dde7104cc0fa002f44bfb"
 
 jobs:
   metal:
