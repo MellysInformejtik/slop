@@ -33,10 +33,11 @@ diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
 index 884fb7a..8e1edec 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -401,6 +401,35 @@ LCK_MTX_DECLARE_ATTR(proc_list_mlock, &proc_mlock_grp, &proc_lck_attr);
+@@ -401,7 +401,36 @@ LCK_MTX_DECLARE_ATTR(proc_list_mlock, &proc_mlock_grp, &proc_lck_attr);
  #if XNU_TARGET_OS_OSX
  /* hook called after root is mounted XXX temporary hack */
  void (*mountroot_post_hook)(void);
+ extern void negroni_kmem_report(const char *why, vm_size_t req, int kr);  /* patch 0362, osfmk/vm/vm_kern.c */
 +
 +/*
 + * NEGRONI: boot-arg negronilsreset=1 deletes the LaunchServices database before
