@@ -68,7 +68,8 @@ jobs:
       - name: NegroniMetal plugin + probes
         run: |
           cd "$P"
-          IOS_MIN="${{ inputs.ios_min }}" bash scripts/metal/build.sh
+          # the import check needs an iOS dyld cache (Apple files): it is run locally against the root instead
+          IOS_MIN="${{ inputs.ios_min }}" NO_IMPORT_CHECK=1 bash scripts/metal/build.sh
 
       - name: Collect
         if: always()
