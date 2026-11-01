@@ -38,6 +38,9 @@ jobs:
           git -C "$P" submodule update --init external/ios-flame external/metal2vulkan external/hackios-xnu-userland
           git -C "$P" submodule status
           echo "P=$P" >> "$GITHUB_ENV"
+          # scripts/lib/env.sh ends with a Colima Docker setup whose last test fails without ~/.docker/contexts,
+          # so sourcing it returns 1 and set -e scripts stop silently; an existing config skips that block
+          mkdir -p "$HOME/.docker-colima" && echo '{}' > "$HOME/.docker-colima/config.json"
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
